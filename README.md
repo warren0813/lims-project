@@ -2,8 +2,8 @@
 
 This repository contains the rebuilt LIMS MVP:
 
-- `lims-backend`: Django Ninja API, PostgreSQL schema, JWT auth, WIP/dispatch workflow, Celery equipment simulation, SSE, reports, seed data.
-- `lims-nextjs`: role-routed Next.js frontend connected to the live API.
+- `backend`: Django Ninja API, PostgreSQL schema, JWT auth, WIP/dispatch workflow, Celery equipment simulation, SSE, reports, seed data.
+- `frontend`: role-routed Next.js frontend connected to the live API.
 
 ## Run With Docker Compose
 
@@ -32,7 +32,7 @@ Seeded demo users:
 Backend:
 
 ```bash
-cd lims-backend
+cd backend
 python -m venv .venv
 . .venv/bin/activate
 pip install -e .
@@ -45,7 +45,7 @@ python manage.py runserver
 Frontend:
 
 ```bash
-cd lims-nextjs
+cd frontend
 cp .env.example .env.local
 npm install
 npm run dev

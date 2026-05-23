@@ -33,7 +33,7 @@ API 互動文件（OpenAPI）：`http://localhost:8000/api/docs`
 ## 專案結構
 
 ```
-lims-backend/
+backend/
 ├── apps/
 │   ├── accounts/       # 使用者與角色管理
 │   ├── experiments/    # 實驗項目管理

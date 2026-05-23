@@ -70,7 +70,7 @@ Role-based access control must be enforced both in frontend routing and backend 
 The backend follows this structure:
 
 ```text
-lims-backend/
+backend/
 ├── apps/
 │   ├── accounts/
 │   ├── experiments/

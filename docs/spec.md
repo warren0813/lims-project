@@ -754,7 +754,7 @@ Recipe usage frequency
 Existing backend structure:
 
 ```text
-lims-backend/
+backend/
 ├── apps/
 │   ├── accounts/
 │   ├── experiments/
@@ -774,7 +774,7 @@ lims-backend/
 Recommended additions:
 
 ```text
-lims-backend/
+backend/
 ├── apps/
 │   ├── dispatch/
 │   │   ├── models.py
