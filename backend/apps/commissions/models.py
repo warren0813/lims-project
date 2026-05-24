@@ -15,29 +15,28 @@ class Priority(models.TextChoices):
 class RequestStatus(models.TextChoices):
     DRAFT = "draft", "Draft"
     SUBMITTED = "submitted", "Submitted"
-    PENDING_APPROVAL = "pending_approval", "Pending Approval"
+    WAITING_APPROVAL = "waiting_approval", "Waiting Approval"
     APPROVED = "approved", "Approved"
-    SAMPLE_RECEIVED = "sample_received", "Sample Received"
-    WIP_CREATED = "wip_created", "WIP Created"
-    DISPATCHED = "dispatched", "Dispatched"
-    RUNNING = "running", "Running"
-    COMPLETED = "completed", "Completed"
-    FAILED = "failed", "Failed"
     REJECTED = "rejected", "Rejected"
+    WAITING_SAMPLE_RECEIVE = "waiting_sample_receive", "Waiting for Sample Receive"
+    RECEIVED = "received", "Received"
+    IN_WIP = "in_wip", "In WIP"
+    QUEUED = "queued", "Queued"
+    RUNNING = "running", "Running"
+    FINAL_CHECK = "final_check", "Final Check"
+    COMPLETED = "completed", "Completed"
     CANCELLED = "cancelled", "Cancelled"
 
 
 class SampleStatus(models.TextChoices):
     PENDING_RECEIVE = "pending_receive", "Pending Receive"
     RECEIVED = "received", "Received"
-    WAITING_WIP = "waiting_wip", "Waiting WIP"
+    REJECTED = "rejected", "Rejected"
     IN_WIP = "in_wip", "In WIP"
-    DISPATCHED = "dispatched", "Dispatched"
+    QUEUED = "queued", "Queued"
     RUNNING = "running", "Running"
     COMPLETED = "completed", "Completed"
     FAILED = "failed", "Failed"
-    RETURNED = "returned", "Returned"
-    SCRAPPED = "scrapped", "Scrapped"
 
 
 class CommissionRequest(UUIDTimeStampedModel):
@@ -79,6 +78,13 @@ class CommissionRequest(UUIDTimeStampedModel):
         blank=True,
         on_delete=models.SET_NULL,
         related_name="approved_commission_requests",
+    )
+    assigned_lab_user = models.ForeignKey(
+        "auth.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="assigned_commission_requests",
     )
     manager_comment = models.TextField(blank=True)
 

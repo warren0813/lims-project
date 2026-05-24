@@ -19,6 +19,7 @@ const accent = '#6c67b8'
 
 const PILL: Record<string, { label: string; bg: string; fg: string }> = {
   pending:         { label: 'Pending',         bg: '#fef4dd', fg: '#a06618' },
+  ready_for_dispatch: { label: 'Queued',       bg: '#fef4dd', fg: '#a06618' },
   dispatched:      { label: 'Dispatched',      bg: '#ecedf0', fg: '#5a5a6e' },
   running:         { label: 'Running',         bg: '#ecebf3', fg: '#4f4a8f' },
   unloaded:        { label: 'Unloaded',        bg: '#e3eef3', fg: '#356a82' },

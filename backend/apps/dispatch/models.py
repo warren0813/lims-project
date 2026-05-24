@@ -45,6 +45,15 @@ class DispatchJob(UUIDTimeStampedModel):
     assigned_at = models.DateTimeField(null=True, blank=True)
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
+    final_confirmed_by = models.ForeignKey(
+        "auth.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="final_confirmed_dispatch_jobs",
+    )
+    final_confirmed_at = models.DateTimeField(null=True, blank=True)
+    final_confirmation_notes = models.TextField(blank=True)
     created_by = models.ForeignKey(
         "auth.User", on_delete=models.PROTECT, related_name="created_dispatch_jobs"
     )

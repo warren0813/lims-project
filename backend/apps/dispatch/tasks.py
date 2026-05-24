@@ -8,6 +8,9 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
+from apps.accounts.models import Role
+from apps.accounts.notifications import notify_role
+from apps.commissions.models import RequestStatus, SampleStatus
 from apps.dispatch.models import DispatchJob, DispatchLog, DispatchStatus
 from apps.dispatch.services import (
     dispatch_qs,
@@ -51,7 +54,12 @@ def run_dispatch_job(self, dispatch_id: str) -> dict:
             dispatch.save()
             dispatch.wip.status = WipStatus.RUNNING
             dispatch.wip.save(update_fields=["status", "updated_at"])
-            equipment.status = EquipmentStatus.RUNNING
+            for item in dispatch.wip.items.select_related("sample", "request"):
+                item.sample.status = SampleStatus.RUNNING
+                item.sample.save(update_fields=["status", "updated_at"])
+                item.request.status = RequestStatus.RUNNING
+                item.request.save(update_fields=["status", "updated_at"])
+            equipment.status = EquipmentStatus.WORKING
             equipment.current_dispatch = dispatch
             equipment.current_step = "Starting"
             equipment.progress = 0
@@ -62,12 +70,17 @@ def run_dispatch_job(self, dispatch_id: str) -> dict:
         publish_dispatch(dispatch)
 
         steps = build_steps(recipe.recipe_code, dispatch.wip.experiment_type.name)
+        sleep_seconds = (
+            settings.EQUIPMENT_SIMULATION_TOTAL_SECONDS / max(len(steps), 1)
+            if getattr(settings, "EQUIPMENT_SIMULATION_TOTAL_SECONDS", 0) > 0
+            else settings.EQUIPMENT_SIMULATION_STEP_SECONDS
+        )
         failure_index = max(1, len(steps) // 2)
         for index, step in enumerate(steps, start=1):
             if dispatch.simulate_failure and dispatch.attempt == 1 and index == failure_index:
                 raise RuntimeError(f"Simulated equipment fault during {step}")
             progress = round(index / len(steps) * 100, 2)
-            time.sleep(settings.EQUIPMENT_SIMULATION_STEP_SECONDS)
+            time.sleep(sleep_seconds)
             dispatch = dispatch_qs().get(pk=dispatch_id)
             dispatch.current_step = step
             dispatch.progress = progress
@@ -123,6 +136,13 @@ def run_dispatch_job(self, dispatch_id: str) -> dict:
             equipment.save()
             sync_request_completion(dispatch.wip, verdict)
         _log(dispatch, "Simulation completed", payload={"verdict": verdict, "result": result_data})
+        notify_role(
+            Role.LAB_USER,
+            "dispatch.completed",
+            f"Dispatch {dispatch.dispatch_no} completed",
+            "Batch is ready for final check.",
+            related_entity=dispatch,
+        )
         publish_dispatch(dispatch)
         return {"dispatch_id": dispatch_id, "status": "completed", "verdict": verdict}
     except Exception as exc:
@@ -134,7 +154,7 @@ def run_dispatch_job(self, dispatch_id: str) -> dict:
             dispatch.save()
             equipment = dispatch.equipment
             if equipment:
-                equipment.status = EquipmentStatus.ERROR
+                equipment.status = EquipmentStatus.FAULTY
                 equipment.current_dispatch = None
                 equipment.current_step = ""
                 equipment.progress = 0
@@ -144,5 +164,19 @@ def run_dispatch_job(self, dispatch_id: str) -> dict:
             dispatch.wip.status = WipStatus.FAILED
             dispatch.wip.save(update_fields=["status", "updated_at"])
         _log(dispatch, str(exc), level="error")
+        notify_role(
+            Role.LAB_USER,
+            "dispatch.failed",
+            f"Dispatch {dispatch.dispatch_no} failed",
+            str(exc),
+            related_entity=dispatch,
+        )
+        notify_role(
+            Role.LAB_MANAGER,
+            "equipment.fault",
+            f"Equipment fault on {dispatch.dispatch_no}",
+            str(exc),
+            related_entity=dispatch,
+        )
         publish_dispatch(dispatch)
         return {"dispatch_id": dispatch_id, "status": "failed", "error": str(exc)}

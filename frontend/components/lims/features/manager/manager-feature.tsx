@@ -6,6 +6,8 @@ import { MgrAllRequests } from "@/components/lims/pages/mgr/all-requests"
 import { MgrRequestDetail } from "@/components/lims/pages/mgr/request-detail"
 import { MgrRecipes } from "@/components/lims/pages/mgr/recipes"
 import { MgrReports } from "@/components/lims/pages/mgr/reports"
+import { MgrAccounts } from "@/components/lims/pages/mgr/accounts"
+import { NotificationsPage } from "@/components/lims/pages/notifications"
 
 interface ManagerFeatureProps {
   route: Route
@@ -27,6 +29,14 @@ export function ManagerFeature({ route, navigate }: ManagerFeatureProps) {
 
   if (route.page === 'mgr_reports') {
     return <MgrReports />
+  }
+
+  if (route.page === 'mgr_accounts') {
+    return <MgrAccounts />
+  }
+
+  if (route.page === 'mgr_notifications') {
+    return <NotificationsPage />
   }
 
   return <MgrDashboard navigate={navigate} />

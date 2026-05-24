@@ -45,6 +45,8 @@ def dispatch_out(dispatch: DispatchJob) -> dict[str, Any]:
         "queued_at": dispatch.queued_at,
         "started_at": dispatch.started_at,
         "finished_at": dispatch.finished_at,
+        "final_confirmed_at": dispatch.final_confirmed_at,
+        "final_confirmation_notes": dispatch.final_confirmation_notes,
         "result": result_out(result),
         "created_at": dispatch.created_at,
         "updated_at": dispatch.updated_at,

@@ -15,6 +15,7 @@ from apps.commissions.models import (
 )
 from apps.commissions.schemas import (
     ApprovalIn,
+    AssignRequestIn,
     BulkReceiveIn,
     CancelIn,
     ReceiveSampleIn,
@@ -142,6 +143,8 @@ def approve_request(
         return 404, {"detail": "Not found"}
     try:
         req = services.approve_request(request.auth, req, payload)
+        if payload.assigned_lab_user_id is not None:
+            req = services.assign_request(request.auth, req, payload.assigned_lab_user_id)
     except DomainError as error:
         return _domain_error(error)
     return 200, request_out(visible_requests(request.auth).get(pk=req.pk))
@@ -160,6 +163,42 @@ def reject_request(request: HttpRequest, request_id: str, payload: RejectIn):
         return 404, {"detail": "Not found"}
     try:
         req = services.reject_request(request.auth, req, payload)
+    except DomainError as error:
+        return _domain_error(error)
+    return 200, request_out(visible_requests(request.auth).get(pk=req.pk))
+
+
+@router.post(
+    "/{request_id}/more-info",
+    response={200: RequestOut, 400: ErrorOut, 403: ErrorOut, 404: ErrorOut},
+)
+def request_more_info(request: HttpRequest, request_id: str, payload: RejectIn):
+    if not has_manager_role(request):
+        return 403, {"detail": "Only lab managers can request more information"}
+    try:
+        req = visible_requests(request.auth).get(pk=request_id)
+    except CommissionRequest.DoesNotExist:
+        return 404, {"detail": "Not found"}
+    try:
+        req = services.request_more_information(request.auth, req, payload.comment)
+    except DomainError as error:
+        return _domain_error(error)
+    return 200, request_out(visible_requests(request.auth).get(pk=req.pk))
+
+
+@router.post(
+    "/{request_id}/assign",
+    response={200: RequestOut, 400: ErrorOut, 403: ErrorOut, 404: ErrorOut},
+)
+def assign_request(request: HttpRequest, request_id: str, payload: AssignRequestIn):
+    if not has_manager_role(request):
+        return 403, {"detail": "Only lab managers can assign requests"}
+    try:
+        req = visible_requests(request.auth).get(pk=request_id)
+    except CommissionRequest.DoesNotExist:
+        return 404, {"detail": "Not found"}
+    try:
+        req = services.assign_request(request.auth, req, payload.lab_user_id)
     except DomainError as error:
         return _domain_error(error)
     return 200, request_out(visible_requests(request.auth).get(pk=req.pk))
@@ -220,6 +259,24 @@ def receive_sample(
         return 404, {"detail": "Not found"}
     try:
         sample = services.receive_sample(request.auth, sample, payload)
+    except DomainError as error:
+        return _domain_error(error)
+    return 200, sample_out(visible_samples(request.auth).get(pk=sample.pk))
+
+
+@sample_router.post(
+    "/{sample_id}/reject",
+    response={200: SampleOut, 400: ErrorOut, 403: ErrorOut, 404: ErrorOut},
+)
+def reject_sample(request: HttpRequest, sample_id: str, payload: RejectIn):
+    if not has_lab_role(request):
+        return 403, {"detail": "Permission denied"}
+    try:
+        sample = visible_samples(request.auth).get(pk=sample_id)
+    except Sample.DoesNotExist:
+        return 404, {"detail": "Not found"}
+    try:
+        sample = services.reject_sample(request.auth, sample, payload.comment)
     except DomainError as error:
         return _domain_error(error)
     return 200, sample_out(visible_samples(request.auth).get(pk=sample.pk))

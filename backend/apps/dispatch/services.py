@@ -3,7 +3,8 @@ from __future__ import annotations
 from django.db import transaction
 from django.utils import timezone
 
-from apps.accounts.models import AuditLog
+from apps.accounts.models import AuditLog, Role
+from apps.accounts.notifications import notify, notify_role
 from apps.commissions.models import RequestStatus, SampleStatus
 from apps.common.codes import next_business_code
 from apps.common.exceptions import DomainError
@@ -100,16 +101,16 @@ def create_dispatch(actor, wip: WipBatch, equipment_id: str | None = None, *, si
         simulate_failure=simulate_failure,
     )
     DispatchLog.objects.create(dispatch=dispatch, message="Dispatch queued")
-    equipment.status = EquipmentStatus.QUEUED
+    equipment.status = EquipmentStatus.WORKING
     equipment.current_dispatch = dispatch
     equipment.progress = 0
     equipment.current_step = "Queued"
     equipment.error_message = ""
     equipment.save()
     for item in wip.items.select_related("sample", "request"):
-        item.sample.status = SampleStatus.DISPATCHED
+        item.sample.status = SampleStatus.QUEUED
         item.sample.save(update_fields=["status", "updated_at"])
-        item.request.status = RequestStatus.DISPATCHED
+        item.request.status = RequestStatus.QUEUED
         item.request.save(update_fields=["status", "updated_at"])
     mark_wip_dispatched(actor, wip)
     publish_dispatch(dispatch)
@@ -173,15 +174,66 @@ def retry_dispatch(actor, dispatch: DispatchJob, *, simulate_failure: bool = Fal
 
 def sync_request_completion(wip: WipBatch, verdict: str) -> None:
     sample_status = SampleStatus.COMPLETED if verdict == "pass" else SampleStatus.FAILED
-    request_status = RequestStatus.COMPLETED if verdict == "pass" else RequestStatus.FAILED
     for item in wip.items.select_related("sample", "request"):
         item.sample.status = sample_status
         item.sample.save(update_fields=["status", "updated_at"])
         request = item.request
-        if not request.samples.exclude(status=sample_status).exists():
-            request.status = request_status
+        if not request.samples.exclude(status__in=[SampleStatus.COMPLETED, SampleStatus.FAILED]).exists():
+            request.status = RequestStatus.FINAL_CHECK
             request.save(update_fields=["status", "updated_at"])
     if not wip.dispatches.exclude(status=DispatchStatus.COMPLETED).exists():
         wip.status = WipStatus.COMPLETED if verdict == "pass" else WipStatus.FAILED
         wip.completed_at = timezone.now()
         wip.save(update_fields=["status", "completed_at", "updated_at"])
+
+
+@transaction.atomic
+def final_confirm_dispatch(actor, dispatch: DispatchJob, notes: str = "") -> DispatchJob:
+    dispatch = dispatch_qs().select_for_update(of=("self",)).get(pk=dispatch.pk)
+    if dispatch.status != DispatchStatus.COMPLETED:
+        raise DomainError("Only completed dispatches can be final-confirmed")
+    if dispatch.final_confirmed_at:
+        raise DomainError("Dispatch has already been final-confirmed")
+    dispatch.final_confirmed_by = actor
+    dispatch.final_confirmed_at = timezone.now()
+    dispatch.final_confirmation_notes = notes
+    dispatch.save(
+        update_fields=[
+            "final_confirmed_by",
+            "final_confirmed_at",
+            "final_confirmation_notes",
+            "updated_at",
+        ]
+    )
+    request_ids = []
+    notified_request_ids = set()
+    for item in dispatch.wip.items.select_related("request__requester"):
+        request = item.request
+        request.status = RequestStatus.COMPLETED
+        request.save(update_fields=["status", "updated_at"])
+        request_ids.append(str(request.id))
+        if request.id in notified_request_ids:
+            continue
+        notified_request_ids.add(request.id)
+        notify(
+            [request.requester],
+            "request.completed",
+            f"Request {request.request_no} complete",
+            notes or f"Final results for {dispatch.dispatch_no} are ready.",
+            related_entity=dispatch,
+        )
+    notify_role(
+        Role.LAB_MANAGER,
+        "dispatch.final_confirmed",
+        f"Dispatch {dispatch.dispatch_no} final-confirmed",
+        notes,
+        related_entity=dispatch,
+    )
+    DispatchLog.objects.create(
+        dispatch=dispatch,
+        message="Final check confirmed",
+        payload={"notes": notes, "request_ids": request_ids},
+    )
+    publish_dispatch(dispatch)
+    _audit(actor, "dispatch.final_confirm", dispatch, notes)
+    return dispatch

@@ -9,8 +9,8 @@ from ninja import Query, Router
 
 from api.schemas import ErrorOut
 from apps.accounts.auth import JWTAuth
-from apps.accounts.permissions import has_manager_role
-from apps.commissions.models import CommissionRequest
+from apps.accounts.permissions import has_lab_role, has_manager_role
+from apps.commissions.models import CommissionRequest, RequestStatus
 from apps.dispatch.models import DispatchJob, DispatchStatus
 from apps.equipment.models import Equipment
 from apps.experiments.models import ExperimentResult
@@ -32,7 +32,9 @@ def summary(request: HttpRequest):
         return denied
     return 200, {
         "requests": CommissionRequest.objects.count(),
-        "pending_approval": CommissionRequest.objects.filter(status="pending_approval").count(),
+        "pending_approval": CommissionRequest.objects.filter(
+            status=RequestStatus.WAITING_APPROVAL
+        ).count(),
         "active_wip": WipBatch.objects.exclude(status__in=["completed", "failed", "cancelled"]).count(),
         "running_dispatches": DispatchJob.objects.filter(status=DispatchStatus.RUNNING).count(),
         "idle_equipment": Equipment.objects.filter(status="idle", is_active=True).count(),
@@ -126,22 +128,75 @@ def recipe_usage(request: HttpRequest):
 
 @router.get("/results.csv")
 def results_csv(request: HttpRequest):
-    denied = _manager(request)
-    if denied:
+    if not has_lab_role(request):
         return HttpResponse("Permission denied", status=403)
     response = HttpResponse(content_type="text/csv")
     response["Content-Disposition"] = 'attachment; filename="lims-results.csv"'
     writer = csv.writer(response)
-    writer.writerow(["dispatch_no", "wip_no", "recipe", "verdict", "summary", "created_at"])
-    for result in ExperimentResult.objects.select_related("dispatch__wip__recipe"):
-        writer.writerow(
-            [
-                result.dispatch.dispatch_no,
-                result.dispatch.wip.wip_no,
-                result.dispatch.wip.recipe.recipe_code,
-                result.verdict,
-                result.summary,
-                result.created_at.isoformat(),
-            ]
-        )
+    writer.writerow(
+        [
+            "request_no",
+            "fab_user",
+            "experiment_type",
+            "sample_no",
+            "sample_status",
+            "batch_no",
+            "dispatch_no",
+            "equipment_code",
+            "equipment_name",
+            "recipe",
+            "dispatch_status",
+            "started_at",
+            "finished_at",
+            "final_confirmed_at",
+            "verdict",
+            "summary",
+            "error_message",
+            "notes",
+        ]
+    )
+    results = ExperimentResult.objects.select_related(
+        "dispatch__wip__recipe",
+        "dispatch__wip__experiment_type",
+        "dispatch__equipment",
+    ).prefetch_related("dispatch__wip__items__sample", "dispatch__wip__items__request__requester")
+    for result in results:
+        dispatch = result.dispatch
+        for item in dispatch.wip.items.all():
+            request_obj = item.request
+            writer.writerow(
+                [
+                    request_obj.request_no,
+                    request_obj.requester.username,
+                    dispatch.wip.experiment_type.name,
+                    item.sample.sample_no,
+                    item.sample.status,
+                    dispatch.wip.wip_no,
+                    dispatch.dispatch_no,
+                    dispatch.equipment.equipment_code if dispatch.equipment else "",
+                    dispatch.equipment.name if dispatch.equipment else "",
+                    dispatch.wip.recipe.recipe_code,
+                    dispatch.status,
+                    dispatch.started_at.isoformat() if dispatch.started_at else "",
+                    dispatch.finished_at.isoformat() if dispatch.finished_at else "",
+                    dispatch.final_confirmed_at.isoformat()
+                    if dispatch.final_confirmed_at
+                    else "",
+                    result.verdict,
+                    result.summary,
+                    dispatch.error_message,
+                    dispatch.final_confirmation_notes,
+                ]
+            )
     return response
+
+
+@router.get("/results.pdf")
+def results_pdf_placeholder(request: HttpRequest):
+    if not has_lab_role(request):
+        return 403, {"detail": "Permission denied"}
+    return 200, {
+        "available": False,
+        "format": "pdf",
+        "detail": "PDF export is not configured in this deployment; CSV export is available.",
+    }

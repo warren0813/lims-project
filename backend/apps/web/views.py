@@ -275,7 +275,7 @@ def dashboard_view(request: HttpRequest) -> HttpResponse:
                 ).count(),
                 "pending_count": Request.objects.filter(
                     requester=request.user,
-                    status=RequestStatus.PENDING_APPROVAL,
+                    status=RequestStatus.WAITING_APPROVAL,
                 ).count(),
                 **chart_ctx,
             },
@@ -313,7 +313,7 @@ def dashboard_view(request: HttpRequest) -> HttpResponse:
             {
                 "title": "Dashboard",
                 "pending_approvals": Request.objects.filter(
-                    status=RequestStatus.PENDING_APPROVAL
+                    status=RequestStatus.WAITING_APPROVAL
                 ).count(),
                 "in_progress": Request.objects.filter(
                     status=RequestStatus.IN_PROGRESS
@@ -1118,7 +1118,7 @@ def _check_request_auto_complete(request_id: int) -> None:
     terminal_statuses = {
         SampleStatus.COMPLETED,
         SampleStatus.VOIDED,
-        SampleStatus.RETURNED,
+        SampleStatus.REJECTED,
     }
     total = req.samples.count()
     terminal_count = req.samples.filter(status__in=terminal_statuses).count()

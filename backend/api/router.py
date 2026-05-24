@@ -2,6 +2,7 @@
 
 from ninja import NinjaAPI
 
+from apps.accounts.api import notification_router, user_router
 from apps.accounts.api import router as auth_router
 from apps.commissions.api import router as requests_router
 from apps.commissions.api import sample_router
@@ -20,6 +21,8 @@ api = NinjaAPI(
 )
 
 api.add_router("/auth/", auth_router)
+api.add_router("/users/", user_router)
+api.add_router("/notifications/", notification_router)
 api.add_router("/experiment-types/", experiment_types_router)
 api.add_router("/equipment/", equipment_router)
 api.add_router("/recipes/", recipe_router)

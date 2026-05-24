@@ -72,6 +72,7 @@ def request_out(req: CommissionRequest, *, include_detail: bool = True) -> dict[
         "submitted_at": req.submitted_at,
         "approved_at": req.approved_at,
         "approved_by": user_brief(req.approved_by),
+        "assigned_lab_user": user_brief(req.assigned_lab_user),
         "manager_comment": req.manager_comment,
         "sample_count": req.samples.count(),
         "samples": [],

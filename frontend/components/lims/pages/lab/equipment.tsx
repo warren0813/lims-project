@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Page, Route } from "@/components/lims/shell"
 import { Card, Button } from "@/components/lims/primitives"
 import * as I from "@/components/lims/icons"
@@ -21,8 +21,10 @@ const accent = '#6c67b8'
 const PILL: Record<string, { label: string; bg: string; fg: string }> = {
   idle:        { label: 'Idle',        bg: '#e7f0e9', fg: '#2e6a47' },
   running:     { label: 'Running',     bg: '#ecebf3', fg: '#4f4a8f' },
+  working:     { label: 'Working',     bg: '#ecebf3', fg: '#4f4a8f' },
   maintenance: { label: 'Maintenance', bg: '#fbe4e6', fg: '#a93445' },
   error:       { label: 'Error',       bg: '#fbe4e6', fg: '#a93445' },
+  faulty:      { label: 'Faulty',      bg: '#fbe4e6', fg: '#a93445' },
   offline:     { label: 'Offline',     bg: '#ebebf0', fg: '#5a5a6e' },
 }
 
@@ -43,7 +45,7 @@ const Pill = ({ kind }: { kind: string }) => {
 const TABS = [
   { id: 'all',         label: 'All',         filter: () => true },
   { id: 'idle',        label: 'Idle',        filter: (e: any) => e.status === 'idle' },
-  { id: 'running',     label: 'Running',     filter: (e: any) => e.status === 'running' },
+  { id: 'running',     label: 'Working',     filter: (e: any) => e.status === 'working' || e.status === 'running' },
   { id: 'maintenance', label: 'Maintenance', filter: (e: any) => e.status === 'maintenance' },
 ]
 
@@ -64,16 +66,53 @@ const CapacityDots = ({ capacity }: { capacity: number }) => {
 }
 
 export function LabEquipment({ canManage = false }: LabEquipmentProps) {
-  const { data: equipment, loading, error, refresh } = useEquipment()
+  const { data: equipment, loading, error } = useEquipment()
   const [currentTab, setCurrentTab] = useState('all')
+  const [liveById, setLiveById] = useState<Record<string, Partial<any>>>({})
+  const pendingRef = useRef<Record<string, Partial<any>>>({})
+  const timerRef = useRef<number | null>(null)
 
   useEffect(() => {
     const events = new EventSource(api.realtime.equipmentEventsUrl())
-    events.onmessage = () => refresh()
-    return () => events.close()
-  }, [refresh])
+    events.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        const rows = Array.isArray(data.items) ? data.items : [data.item || data]
+        for (const row of rows) {
+          const id = String(row.equipment_id || row.id || '')
+          if (!id) continue
+          pendingRef.current[id] = {
+            status: row.equipment_status || row.status,
+            progress: row.progress,
+            currentStep: row.current_step,
+            currentDispatchId: row.dispatch_id || row.current_dispatch_id,
+            workerNode: row.worker || row.worker_node_name,
+            lastHeartbeat: row.last_heartbeat || row.last_heartbeat_at,
+          }
+        }
+        if (timerRef.current == null) {
+          timerRef.current = window.setTimeout(() => {
+            const pending = pendingRef.current
+            pendingRef.current = {}
+            timerRef.current = null
+            setLiveById((current) => {
+              const next = { ...current }
+              for (const [equipmentId, patch] of Object.entries(pending)) {
+                next[equipmentId] = { ...(next[equipmentId] || {}), ...patch }
+              }
+              return next
+            })
+          }, 1000)
+        }
+      } catch {}
+    }
+    return () => {
+      events.close()
+      if (timerRef.current != null) window.clearTimeout(timerRef.current)
+    }
+  }, [])
 
-  const list = equipment || []
+  const list = useMemo(() => (equipment || []).map((item) => ({ ...item, ...(liveById[item.id] || {}) })), [equipment, liveById])
   const counts = Object.fromEntries(TABS.map(t => [t.id, list.filter(t.filter).length]))
   const tabFilter = TABS.find(t => t.id === currentTab)?.filter || (() => true)
   const filtered = list.filter(tabFilter)

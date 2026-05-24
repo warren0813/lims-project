@@ -8,7 +8,7 @@ import type { Route } from "@/components/lims/shell"
 export const ACCOUNTS: Record<string, { password: string; role: string; display: string; subtitle: string }> = {
   fab_user:    { password: 'mcv8uPKSvqz8Yru', role: 'fab_user',    display: 'fab_user',    subtitle: '廠區使用者' },
   lab_member:  { password: 't26fnPyedon6aFz', role: 'lab_member',  display: 'lab_member',  subtitle: '實驗室成員' },
-  lab_manager: { password: 'q4gXk7vEt2RNw9p', role: 'lab_manager', display: 'lab_manager', subtitle: '實驗室主管' },
+  lab_manager: { password: 'eWoN48kU0QrEV8B', role: 'lab_manager', display: 'lab_manager', subtitle: '實驗室主管' },
 }
 
 // ── Auth Context ────────────────────────────────────────────────
@@ -23,6 +23,7 @@ interface AuthContextValue {
   user: AuthUser | null
   loading: boolean
   login: (username: string, password: string) => Promise<AuthUser>
+  adoptUser: (user: AuthUser) => void
   logout: () => void
 }
 
@@ -33,17 +34,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    // Check for cached user on mount
-    const cached = api.auth.cachedUser()
-    if (cached) {
-      setUser({
-        username: cached.username,
-        role: cached.role,
-        display: cached.username,
-        subtitle: cached.department || cached.role,
-      })
+    let cancelled = false
+    async function loadSession() {
+      if (typeof window !== 'undefined' && window.location.pathname === '/') {
+        api.auth.clearLocal()
+        if (!cancelled) {
+          setUser(null)
+          setLoading(false)
+        }
+        return
+      }
+      try {
+        const current = await api.auth.me()
+        if (!cancelled) {
+          setUser({
+            username: current.username,
+            role: current.role,
+            display: current.username,
+            subtitle: current.department || current.role,
+          })
+        }
+      } catch {
+        api.auth.clearLocal()
+        if (!cancelled) setUser(null)
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
     }
-    setLoading(false)
+    loadSession()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const login = useCallback(async (username: string, password: string) => {
@@ -65,7 +86,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, adoptUser: setUser, logout }}>
       {children}
     </AuthContext.Provider>
   )
@@ -145,7 +166,7 @@ export function useRequests() {
 
 export function useRequestDetail(id: string | number | null) {
   return useData(
-    async () => id != null ? api.requests.get(id) : null,
+    async () => id != null ? api.requests.get(String(id)) : null,
     [id]
   )
 }
@@ -164,7 +185,7 @@ export function useWips() {
 
 export function useWipDetail(id: string | number | null) {
   return useData(
-    async () => id != null ? api.wips.get(id) : null,
+    async () => id != null ? api.wips.get(String(id)) : null,
     [id]
   )
 }
@@ -177,7 +198,7 @@ export function useDispatches() {
 
 export function useDispatchDetail(id: string | number | null) {
   return useData(
-    async () => id != null ? api.dispatches.get(id) : null,
+    async () => id != null ? api.dispatches.get(String(id)) : null,
     [id]
   )
 }
@@ -185,6 +206,21 @@ export function useDispatchDetail(id: string | number | null) {
 // Equipment hooks
 export function useEquipment() {
   const state = useData(() => api.equipment.list(), [])
+  return { ...state, data: state.data ?? [] }
+}
+
+export function useNotifications(unread?: boolean) {
+  const state = useData(() => api.notifications.list(unread), [unread])
+  return { ...state, data: state.data ?? [] }
+}
+
+export function useUsers() {
+  const state = useData(() => api.users.list(), [])
+  return { ...state, data: state.data ?? [] }
+}
+
+export function useWipProposals() {
+  const state = useData(() => api.wips.proposals(), [])
   return { ...state, data: state.data ?? [] }
 }
 

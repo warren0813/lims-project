@@ -23,8 +23,8 @@ from apps.experiments.models import ExperimentType, LabCategory
 
 USERS = [
     ("fab_user", "mcv8uPKSvqz8Yru", Role.FAB_USER, "Fab Operations"),
-    ("lab_member", "t26fnPyedon6aFz", Role.LAB_MEMBER, "Metrology Lab"),
-    ("lab_manager", "q4gXk7vEt2RNw9p", Role.LAB_MANAGER, "Lab Management"),
+    ("lab_member", "t26fnPyedon6aFz", Role.LAB_USER, "Metrology Lab"),
+    ("lab_manager", "eWoN48kU0QrEV8B", Role.LAB_MANAGER, "Lab Management"),
 ]
 
 
@@ -39,9 +39,11 @@ class Command(BaseCommand):
                 username=username,
                 defaults={"email": f"{username}@lims.local", "is_staff": role != Role.FAB_USER},
             )
-            if created:
-                user.set_password(password)
-                user.save(update_fields=["password"])
+            user.email = f"{username}@lims.local"
+            user.is_staff = role != Role.FAB_USER
+            user.is_active = True
+            user.set_password(password)
+            user.save(update_fields=["email", "is_staff", "is_active", "password"])
             UserProfile.objects.update_or_create(
                 user=user, defaults={"role": role, "department": department}
             )
@@ -52,7 +54,6 @@ class Command(BaseCommand):
             "THIN_FILM": ("Thin Film Thickness Measurement", LabCategory.MA),
             "ETCH": ("Etch Rate Test", LabCategory.MA),
             "SHEET_RES": ("Sheet Resistance Measurement", LabCategory.TM),
-            "THERMAL": ("Thermal Annealing Simulation", LabCategory.RA),
         }
         exp_objs = {}
         for code, (name, category) in experiments.items():
@@ -69,10 +70,9 @@ class Command(BaseCommand):
 
         equipment_types = {
             "SEM_TOOL": ("Scanning Electron Microscope", "queue.sem"),
-            "ELLIPSOMETER": ("Ellipsometer", "queue.ellipsometer"),
+            "ELLIPSOMETER": ("Spectroscopic Ellipsometer", "queue.ellipsometer"),
             "ETCH_CHAMBER": ("Etch Chamber Simulator", "queue.etch"),
             "PROBE": ("Four-Point Probe", "queue.probe"),
-            "RTA": ("Rapid Thermal Annealing Tool", "queue.probe"),
         }
         type_objs = {}
         for code, (name, queue) in equipment_types.items():
@@ -83,11 +83,62 @@ class Command(BaseCommand):
             type_objs[code] = item
 
         recipe_specs = [
-            ("SEM_DEFECT_SCAN_V1", "SEM defect scan", "SEM", "SEM_TOOL", {"voltage_kv": 5, "scan_area_um": 100, "max_batch_size": 4}, 45, 4),
-            ("THIN_FILM_ELLIPSO_V1", "Thin film ellipsometry", "THIN_FILM", "ELLIPSOMETER", {"wavelength_nm": 632, "points": 49}, 40, 6),
-            ("ETCH_RATE_V1", "Etch rate process check", "ETCH", "ETCH_CHAMBER", {"target_depth_nm": 120, "gas": "CF4"}, 50, 3),
-            ("SHEET_RES_PROBE_V1", "Sheet resistance map", "SHEET_RES", "PROBE", {"measurement_points": 49}, 35, 8),
-            ("RTA_ANNEAL_V1", "Thermal anneal profile", "THERMAL", "RTA", {"target_temperature_c": 950}, 60, 2),
+            (
+                "SEM_DEFECT_SCAN_V1",
+                "SEM defect scan preset",
+                "SEM",
+                "SEM_TOOL",
+                {
+                    "voltage_kv": 5,
+                    "scan_area_um": 100,
+                    "magnification": "25k x",
+                    "dwell_us": 8,
+                },
+                45,
+                4,
+            ),
+            (
+                "THIN_FILM_ELLIPSO_V1",
+                "Thin film ellipsometry preset",
+                "THIN_FILM",
+                "ELLIPSOMETER",
+                {
+                    "wavelength_nm": 632,
+                    "points": 49,
+                    "angle_deg": 70,
+                    "fit_model": "SiO2 baseline",
+                },
+                40,
+                6,
+            ),
+            (
+                "ETCH_RATE_V1",
+                "Etch rate check preset",
+                "ETCH",
+                "ETCH_CHAMBER",
+                {
+                    "target_depth_nm": 120,
+                    "gas": "CF4",
+                    "rf_power_w": 250,
+                    "duration_s": 90,
+                },
+                50,
+                3,
+            ),
+            (
+                "SHEET_RES_PROBE_V1",
+                "Sheet resistance map preset",
+                "SHEET_RES",
+                "PROBE",
+                {
+                    "measurement_points": 49,
+                    "current_ma": 10,
+                    "edge_exclusion_mm": 3,
+                    "map": "full wafer",
+                },
+                35,
+                8,
+            ),
         ]
         recipe_objs = {}
         for code, name, exp_code, type_code, params, runtime, batch_size in recipe_specs:
@@ -108,12 +159,12 @@ class Command(BaseCommand):
             recipe_objs[code] = recipe
 
         equipment_specs = [
-            ("SEM-01", "SEM-01", "Hitachi Regulus", "SEM_TOOL", "SEM_DEFECT_SCAN_V1", 4),
-            ("ELLIP-01", "Ellipsometer-01", "J.A. Woollam M-2000", "ELLIPSOMETER", "THIN_FILM_ELLIPSO_V1", 6),
-            ("ETCH-01", "Etch-01", "PlasmaPro 100", "ETCH_CHAMBER", "ETCH_RATE_V1", 3),
-            ("PROBE-01", "Probe-01", "CDE ResMap", "PROBE", "SHEET_RES_PROBE_V1", 8),
+            ("SEM-01", "SEM-01", "Hitachi Regulus 8230", "SEM_TOOL", "SEM_DEFECT_SCAN_V1", 4, "Metrology Bay A"),
+            ("ELLIP-01", "Ellipsometer-01", "J.A. Woollam M-2000", "ELLIPSOMETER", "THIN_FILM_ELLIPSO_V1", 6, "Metrology Bay B"),
+            ("ETCH-01", "Etch-01", "PlasmaPro 100 Cobra", "ETCH_CHAMBER", "ETCH_RATE_V1", 3, "Reliability Bay C"),
+            ("PROBE-01", "Probe-01", "CDE ResMap 178", "PROBE", "SHEET_RES_PROBE_V1", 8, "Test Bay D"),
         ]
-        for code, name, model, type_code, recipe_code, capacity in equipment_specs:
+        for code, name, model, type_code, recipe_code, capacity, location in equipment_specs:
             equipment, _ = Equipment.objects.update_or_create(
                 equipment_code=code,
                 defaults={
@@ -122,7 +173,7 @@ class Command(BaseCommand):
                     "equipment_type": type_objs[type_code],
                     "worker_queue_name": type_objs[type_code].queue_name,
                     "capacity": capacity,
-                    "location": "Bay A",
+                    "location": location,
                     "is_active": True,
                     "status": "idle",
                 },

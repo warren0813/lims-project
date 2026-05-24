@@ -14,6 +14,7 @@ from apps.dispatch.schemas import (
     DispatchLogOut,
     DispatchOut,
     DispatchRetryIn,
+    FinalConfirmIn,
 )
 from apps.dispatch.serializers import dispatch_out
 from apps.realtime.events import read_json, read_logs
@@ -130,6 +131,27 @@ def cancel_dispatch(request: HttpRequest, dispatch_id: str):
         return 404, {"detail": "Not found"}
     try:
         dispatch = services.cancel_dispatch(request.auth, dispatch)
+    except DomainError as error:
+        return _err(error)
+    return 200, dispatch_out(services.dispatch_qs().get(pk=dispatch.pk))
+
+
+@router.post(
+    "/{dispatch_id}/final-confirm",
+    response={200: DispatchOut, 400: ErrorOut, 403: ErrorOut, 404: ErrorOut},
+)
+def final_confirm_dispatch(
+    request: HttpRequest, dispatch_id: str, payload: FinalConfirmIn | None = None
+):
+    if not has_lab_role(request):
+        return 403, {"detail": "Permission denied"}
+    payload = payload or FinalConfirmIn()
+    try:
+        dispatch = services.dispatch_qs().get(pk=dispatch_id)
+    except DispatchJob.DoesNotExist:
+        return 404, {"detail": "Not found"}
+    try:
+        dispatch = services.final_confirm_dispatch(request.auth, dispatch, payload.notes)
     except DomainError as error:
         return _err(error)
     return 200, dispatch_out(services.dispatch_qs().get(pk=dispatch.pk))

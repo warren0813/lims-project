@@ -7,12 +7,10 @@ from apps.common.models import UUIDTimeStampedModel
 
 class EquipmentStatus(models.TextChoices):
     IDLE = "idle", "Idle"
-    RESERVED = "reserved", "Reserved"
-    QUEUED = "queued", "Queued"
-    RUNNING = "running", "Running"
+    WORKING = "working", "Working"
+    FAULTY = "faulty", "Faulty"
     MAINTENANCE = "maintenance", "Maintenance"
     OFFLINE = "offline", "Offline"
-    ERROR = "error", "Error"
 
 
 class EquipmentType(UUIDTimeStampedModel):

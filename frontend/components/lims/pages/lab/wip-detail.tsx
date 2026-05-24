@@ -34,9 +34,9 @@ export function LabWipDetail({ id, navigate }: LabWipDetailProps) {
           <Info label="Dispatches" value={wip.dispatchCount} />
           <Info label="Created" value={wip.created || '—'} />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {wip.status === 'created' && <Button variant="dark" disabled={busy} onClick={async () => { setBusy(true); await api.wips.lock(wip.id); await refresh(); setBusy(false) }}>Lock WIP</Button>}
+            {['created', 'draft'].includes(wip.status) && <Button variant="dark" disabled={busy} onClick={async () => { setBusy(true); await api.wips.lock(wip.id); await refresh(); setBusy(false) }}>Lock WIP</Button>}
             {wip.status === 'ready_for_dispatch' && <Button variant="success" disabled={busy} onClick={async () => { setBusy(true); const dispatch = await api.wips.createDispatch(wip.id, {}); setBusy(false); navigate({ page: 'lab_dispatch_detail', id: dispatch.id }) }}>Dispatch</Button>}
-            {!['completed', 'cancelled', 'running', 'dispatched'].includes(wip.status) && <Button variant="danger" disabled={busy} onClick={async () => { setBusy(true); await api.wips.cancel(wip.id); await refresh(); setBusy(false) }}>Cancel</Button>}
+            {!['completed', 'cancelled', 'running', 'dispatched', 'dispatching'].includes(wip.status) && <Button variant="danger" disabled={busy} onClick={async () => { setBusy(true); await api.wips.cancel(wip.id); await refresh(); setBusy(false) }}>Cancel</Button>}
           </div>
         </Card>
       </div>

@@ -52,10 +52,15 @@ class ApprovalIn(Schema):
     priority_override: str | None = None
     suggested_recipe_id: str | None = None
     expected_completion_date: date | None = None
+    assigned_lab_user_id: int | None = None
 
 
 class RejectIn(Schema):
     comment: str = Field(..., min_length=1)
+
+
+class AssignRequestIn(Schema):
+    lab_user_id: int | None = None
 
 
 class CancelIn(Schema):
@@ -151,6 +156,7 @@ class RequestOut(Schema):
     submitted_at: datetime | None
     approved_at: datetime | None
     approved_by: UserBriefOut | None
+    assigned_lab_user: UserBriefOut | None
     manager_comment: str
     sample_count: int
     samples: list[SampleOut] = []

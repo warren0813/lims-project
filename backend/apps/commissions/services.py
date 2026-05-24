@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from django.contrib.auth.models import User
 from django.db import transaction
 from django.utils import timezone
 
-from apps.accounts.models import AuditLog
+from apps.accounts.models import AuditLog, Role
+from apps.accounts.notifications import notify, notify_role
 from apps.commissions.models import (
     ApprovalRecord,
     CommissionRequest,
@@ -20,7 +22,6 @@ from apps.experiments.models import ExperimentType
 
 TERMINAL_REQUEST_STATUSES = {
     RequestStatus.COMPLETED,
-    RequestStatus.FAILED,
     RequestStatus.REJECTED,
     RequestStatus.CANCELLED,
 }
@@ -97,7 +98,7 @@ def create_request(actor, payload, *, as_draft: bool) -> CommissionRequest:
     else:
         recipe = _default_recipe(experiment_type)
 
-    status = RequestStatus.DRAFT if as_draft else RequestStatus.PENDING_APPROVAL
+    status = RequestStatus.DRAFT if as_draft else RequestStatus.WAITING_APPROVAL
     req = CommissionRequest.objects.create(
         request_no=next_business_code(CommissionRequest, "request_no", "REQ"),
         requester=actor,
@@ -144,6 +145,14 @@ def create_request(actor, payload, *, as_draft: bool) -> CommissionRequest:
             reason="registered with request",
         )
     _audit(actor, "request.create", req)
+    if not as_draft:
+        notify_role(
+            Role.LAB_MANAGER,
+            "request.submitted",
+            f"New request {req.request_no}",
+            req.title,
+            related_entity=req,
+        )
     return req
 
 
@@ -173,14 +182,21 @@ def submit_request(actor, req: CommissionRequest) -> CommissionRequest:
         raise DomainError("Only draft requests can be submitted")
     req.submitted_at = timezone.now()
     req.save(update_fields=["submitted_at", "updated_at"])
-    _set_request_status(req, RequestStatus.PENDING_APPROVAL, actor, "submitted")
+    _set_request_status(req, RequestStatus.WAITING_APPROVAL, actor, "submitted")
     _audit(actor, "request.submit", req)
+    notify_role(
+        Role.LAB_MANAGER,
+        "request.submitted",
+        f"New request {req.request_no}",
+        req.title,
+        related_entity=req,
+    )
     return req
 
 
 @transaction.atomic
 def approve_request(actor, req: CommissionRequest, payload) -> CommissionRequest:
-    if req.status != RequestStatus.PENDING_APPROVAL:
+    if req.status != RequestStatus.WAITING_APPROVAL:
         raise DomainError("Only pending requests can be approved")
     if payload.priority_override:
         req.priority = payload.priority_override
@@ -200,14 +216,28 @@ def approve_request(actor, req: CommissionRequest, payload) -> CommissionRequest
         priority_override=payload.priority_override or "",
         suggested_recipe=req.preferred_recipe,
     )
-    _set_request_status(req, RequestStatus.APPROVED, actor, payload.comment)
+    _set_request_status(req, RequestStatus.WAITING_SAMPLE_RECEIVE, actor, payload.comment)
     _audit(actor, "request.approve", req)
+    notify(
+        [req.requester],
+        "request.approved",
+        f"Request {req.request_no} approved",
+        payload.comment,
+        related_entity=req,
+    )
+    notify_role(
+        Role.LAB_USER,
+        "sample.incoming",
+        f"Samples ready to receive for {req.request_no}",
+        req.title,
+        related_entity=req,
+    )
     return req
 
 
 @transaction.atomic
 def reject_request(actor, req: CommissionRequest, payload) -> CommissionRequest:
-    if req.status != RequestStatus.PENDING_APPROVAL:
+    if req.status != RequestStatus.WAITING_APPROVAL:
         raise DomainError("Only pending requests can be rejected")
     ApprovalRecord.objects.create(
         request=req,
@@ -217,6 +247,60 @@ def reject_request(actor, req: CommissionRequest, payload) -> CommissionRequest:
     )
     _set_request_status(req, RequestStatus.REJECTED, actor, payload.comment)
     _audit(actor, "request.reject", req)
+    notify(
+        [req.requester],
+        "request.rejected",
+        f"Request {req.request_no} rejected",
+        payload.comment,
+        related_entity=req,
+    )
+    return req
+
+
+@transaction.atomic
+def request_more_information(actor, req: CommissionRequest, comment: str) -> CommissionRequest:
+    if req.status != RequestStatus.WAITING_APPROVAL:
+        raise DomainError("Only pending requests can be returned for more information")
+    ApprovalRecord.objects.create(
+        request=req,
+        reviewer=actor,
+        decision=ApprovalRecord.Decision.MORE_INFO,
+        comment=comment,
+    )
+    req.manager_comment = comment
+    req.save(update_fields=["manager_comment", "updated_at"])
+    notify(
+        [req.requester],
+        "request.more_info",
+        f"More information requested for {req.request_no}",
+        comment,
+        related_entity=req,
+    )
+    _audit(actor, "request.more_info", req, comment)
+    return req
+
+
+@transaction.atomic
+def assign_request(actor, req: CommissionRequest, lab_user_id: int | None) -> CommissionRequest:
+    lab_user = None
+    if lab_user_id is not None:
+        try:
+            lab_user = User.objects.select_related("profile").get(pk=lab_user_id)
+        except User.DoesNotExist as exc:
+            raise DomainError("Lab user not found") from exc
+        if getattr(lab_user.profile, "role", "") not in {Role.LAB_USER, Role.LAB_MEMBER}:
+            raise DomainError("Assignee must be a lab user")
+    req.assigned_lab_user = lab_user
+    req.save(update_fields=["assigned_lab_user", "updated_at"])
+    if lab_user:
+        notify(
+            [lab_user],
+            "request.assigned",
+            f"Request {req.request_no} assigned",
+            req.title,
+            related_entity=req,
+        )
+    _audit(actor, "request.assign", req, str(lab_user_id or "unassigned"))
     return req
 
 
@@ -233,14 +317,24 @@ def cancel_request(actor, req: CommissionRequest, reason: str) -> CommissionRequ
     for sample in req.samples.exclude(
         status__in=[SampleStatus.COMPLETED, SampleStatus.FAILED]
     ):
-        _set_sample_status(sample, SampleStatus.RETURNED, actor, reason)
+        _set_sample_status(sample, SampleStatus.REJECTED, actor, reason)
     _audit(actor, "request.cancel", req, reason)
+    notify(
+        [req.requester],
+        "request.cancelled",
+        f"Request {req.request_no} cancelled",
+        reason,
+        related_entity=req,
+    )
     return req
 
 
 @transaction.atomic
 def receive_sample(actor, sample: Sample, payload) -> Sample:
-    if sample.request.status != RequestStatus.APPROVED:
+    if sample.request.status not in {
+        RequestStatus.APPROVED,
+        RequestStatus.WAITING_SAMPLE_RECEIVE,
+    }:
         raise DomainError("Samples can only be received for approved requests")
     if sample.status != SampleStatus.PENDING_RECEIVE:
         raise DomainError("Only pending samples can be received")
@@ -251,9 +345,47 @@ def receive_sample(actor, sample: Sample, payload) -> Sample:
     if payload.note:
         sample.handling_notes = f"{sample.handling_notes}\n{payload.note}".strip()
     sample.save()
-    _set_sample_status(sample, SampleStatus.WAITING_WIP, actor, "sample received")
+    _set_sample_status(sample, SampleStatus.RECEIVED, actor, "sample received")
     req = sample.request
-    if not req.samples.exclude(status=SampleStatus.WAITING_WIP).exists():
-        _set_request_status(req, RequestStatus.SAMPLE_RECEIVED, actor, "all samples received")
+    if not req.samples.exclude(status=SampleStatus.RECEIVED).exists():
+        _set_request_status(req, RequestStatus.RECEIVED, actor, "all samples received")
     _audit(actor, "sample.receive", sample)
+    notify(
+        [req.requester],
+        "sample.received",
+        f"Sample {sample.sample_no} received",
+        req.title,
+        related_entity=sample,
+    )
+    return sample
+
+
+@transaction.atomic
+def reject_sample(actor, sample: Sample, reason: str) -> Sample:
+    if not reason:
+        raise DomainError("A rejection reason is required")
+    if sample.status not in {SampleStatus.PENDING_RECEIVE, SampleStatus.RECEIVED}:
+        raise DomainError("Only incoming or received samples can be rejected")
+    if reason:
+        sample.handling_notes = f"{sample.handling_notes}\n{reason}".strip()
+    sample.save(update_fields=["handling_notes", "updated_at"])
+    _set_sample_status(sample, SampleStatus.REJECTED, actor, reason)
+    request = sample.request
+    if not request.samples.exclude(status=SampleStatus.REJECTED).exists():
+        _set_request_status(request, RequestStatus.REJECTED, actor, reason)
+    notify(
+        [request.requester],
+        "sample.rejected",
+        f"Sample {sample.sample_no} rejected",
+        reason,
+        related_entity=sample,
+    )
+    notify_role(
+        Role.LAB_MANAGER,
+        "sample.rejected",
+        f"Sample {sample.sample_no} rejected",
+        reason,
+        related_entity=sample,
+    )
+    _audit(actor, "sample.reject", sample, reason)
     return sample

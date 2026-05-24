@@ -13,6 +13,7 @@ def request_queryset() -> QuerySet[CommissionRequest]:
             "experiment_type",
             "preferred_recipe",
             "approved_by__profile",
+            "assigned_lab_user__profile",
         )
         .prefetch_related(
             "samples__request__requester__profile",

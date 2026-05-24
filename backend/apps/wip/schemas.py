@@ -16,6 +16,13 @@ class AutoWipIn(Schema):
     max_batches: int | None = Field(None, ge=1)
 
 
+class ProposalBatchUpdateIn(Schema):
+    order: int | None = Field(None, ge=1)
+    equipment_id: str | None = None
+    priority: str | None = None
+    reason: str | None = None
+
+
 class AddSampleIn(Schema):
     sample_id: str
 
@@ -49,5 +56,48 @@ class WipOut(Schema):
     note: str
     samples: list[WipSampleOut]
     dispatch_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProposalItemOut(Schema):
+    id: str
+    sample_id: str
+    sample_no: str
+    request_id: str
+    request_no: str
+    fab_user: str
+    priority: str
+    order: int
+    reason: str
+
+
+class ProposalBatchOut(Schema):
+    id: str
+    experiment_type_id: str
+    experiment_type_name: str
+    recipe_id: str
+    recipe_name: str
+    equipment_type_id: str
+    equipment_type_name: str
+    equipment_id: str | None
+    equipment_name: str | None
+    priority: str
+    order: int
+    estimated_runtime_sec: int
+    reason: str
+    warnings: list[str]
+    items: list[ProposalItemOut]
+
+
+class ProposalOut(Schema):
+    id: str
+    proposal_no: str
+    status: str
+    source: str
+    warnings: list[str]
+    note: str
+    estimated_total_runtime_sec: int
+    batches: list[ProposalBatchOut]
     created_at: datetime
     updated_at: datetime

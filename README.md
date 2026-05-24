@@ -2,7 +2,7 @@
 
 This repository contains the rebuilt LIMS MVP:
 
-- `backend`: Django Ninja API, PostgreSQL schema, JWT auth, WIP/dispatch workflow, Celery equipment simulation, SSE, reports, seed data.
+- `backend`: Django Ninja API, PostgreSQL schema, JWT auth, WIP/dispatch workflow, Celery equipment simulation, SSE, and reports.
 - `frontend`: role-routed Next.js frontend connected to the live API.
 
 ## Run With Docker Compose
@@ -19,13 +19,9 @@ Services:
 - PostgreSQL: localhost:5432
 - Redis: localhost:6379
 
-Seeded demo users:
-
-| Role | Username | Password |
-| --- | --- | --- |
-| Fab user | `fab_user` | `mcv8uPKSvqz8Yru` |
-| Lab member | `lab_member` | `t26fnPyedon6aFz` |
-| Lab manager | `lab_manager` | `q4gXk7vEt2RNw9p` |
+The application starts with a clean database. On first launch, create the first
+lab manager from the login screen. After that, use the manager account APIs/UI to
+create fab and lab users.
 
 ## Local Development
 
@@ -38,8 +34,13 @@ python -m venv .venv
 pip install -e .
 pip install pytest pytest-django factory-boy ruff
 python manage.py migrate
-python manage.py seed_demo
 python manage.py runserver
+```
+
+Optional demo data for local testing only:
+
+```bash
+python manage.py seed_demo
 ```
 
 Frontend:

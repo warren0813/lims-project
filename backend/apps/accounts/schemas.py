@@ -3,9 +3,9 @@
 from typing import Any
 
 from django.contrib.auth.models import User
-from ninja import Schema
+from ninja import Field, Schema
 
-from apps.accounts.models import UserProfile
+from apps.accounts.models import UserProfile, normalize_role
 
 
 class LoginIn(Schema):
@@ -34,7 +34,7 @@ class UserOut(Schema):
         return {
             "id": user.pk,
             "username": user.username,
-            "role": profile.role,
+            "role": normalize_role(profile.role),
             "department": profile.department,
         }
 
@@ -62,7 +62,7 @@ class TokenOut(Schema):
             "refresh_token": refresh_token,
             "id": user.pk,
             "username": user.username,
-            "role": profile.role,
+            "role": normalize_role(profile.role),
             "department": profile.department,
         }
 
@@ -80,7 +80,58 @@ class RefreshOut(Schema):
     refresh_token: str
 
 
+class BootstrapStatusOut(Schema):
+    needs_bootstrap: bool
+    user_count: int
+
+
+class BootstrapManagerIn(Schema):
+    username: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=8)
+    email: str = ""
+    department: str = "Lab Management"
+
+
 class ErrorOut(Schema):
     """Output schema for generic detail messages (errors and confirmations)."""
 
     detail: str
+
+
+class UserAdminOut(Schema):
+    id: int
+    username: str
+    email: str
+    role: str
+    department: str
+    is_active: bool
+    is_staff: bool
+    date_joined: str
+
+
+class UserCreateIn(Schema):
+    username: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=8)
+    email: str = ""
+    role: str = "fab_user"
+    department: str = ""
+    is_active: bool = True
+
+
+class UserUpdateIn(Schema):
+    email: str | None = None
+    role: str | None = None
+    department: str | None = None
+    is_active: bool | None = None
+
+
+class NotificationOut(Schema):
+    id: int
+    notification_type: str
+    title: str
+    body: str
+    related_entity_type: str
+    related_entity_id: str
+    is_read: bool
+    created_at: str
+    read_at: str | None

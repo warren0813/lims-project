@@ -23,6 +23,7 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Original JSX source snapshots are retained for reference only.
     "lib/lims/*-source.jsx",
+    "components/lims/reference/*.jsx",
   ]),
 ]);
 

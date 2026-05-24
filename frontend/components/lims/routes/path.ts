@@ -17,7 +17,7 @@ export function rolePathForUserRole(role?: string): LimsRolePath {
 export function isRouteAllowedForRole(route: Route, role?: string): boolean {
   if (role === 'fab_user') return route.page.startsWith('fab_')
   if (role === 'lab_manager') return route.page.startsWith('mgr_') || route.page.startsWith('lab_')
-  return route.page.startsWith('lab_') || ['dashboard', 'samples', 'wip', 'dispatches', 'equipment'].includes(route.page)
+  return role === 'lab_user' && (route.page.startsWith('lab_') || ['dashboard', 'samples', 'wip', 'dispatches', 'equipment'].includes(route.page))
 }
 
 export function routeToPath(route: Route, role?: string): string {
@@ -27,6 +27,7 @@ export function routeToPath(route: Route, role?: string): string {
     case 'fab_requests': return route.tab && route.tab !== 'all' ? `/fab/requests?tab=${encodeURIComponent(route.tab)}` : '/fab/requests'
     case 'fab_drafts': return '/fab/drafts'
     case 'fab_new': return '/fab/new'
+    case 'fab_notifications': return '/fab/notifications'
     case 'fab_draft_edit': return `/fab/drafts/${route.id}/edit`
     case 'fab_request': return `/fab/requests/${route.id}`
     case 'mgr_dashboard': return '/manager/dashboard'
@@ -34,6 +35,8 @@ export function routeToPath(route: Route, role?: string): string {
     case 'mgr_request': return `/manager/requests/${route.id}`
     case 'mgr_recipes': return '/manager/recipes'
     case 'mgr_reports': return '/manager/reports'
+    case 'mgr_accounts': return '/manager/accounts'
+    case 'mgr_notifications': return '/manager/notifications'
     case 'lab_dashboard':
     case 'dashboard': return rolePath === 'manager' ? '/manager/lab/dashboard' : '/lab/dashboard'
     case 'lab_samples':
@@ -47,6 +50,8 @@ export function routeToPath(route: Route, role?: string): string {
     case 'lab_dispatch_detail': return labPath(`dispatches/${route.id}`, route, rolePath)
     case 'lab_equipment':
     case 'equipment': return labPath('equipment', route, rolePath)
+    case 'lab_notifications':
+    case 'notifications': return labPath('notifications', route, rolePath)
     default: return rolePath === 'fab' ? '/fab/dashboard' : rolePath === 'manager' ? '/manager/dashboard' : '/lab/dashboard'
   }
 }
@@ -67,6 +72,7 @@ export function routeFromPath(role: string | undefined, segments: string[] = [],
     if (first === 'drafts' && second && third === 'edit') return { page: 'fab_draft_edit', id: numericId(second) }
     if (first === 'drafts') return { page: 'fab_drafts' }
     if (first === 'new') return { page: 'fab_new' }
+    if (first === 'notifications') return { page: 'fab_notifications' }
     return { page: 'fab_dashboard' }
   }
 
@@ -78,6 +84,8 @@ export function routeFromPath(role: string | undefined, segments: string[] = [],
     if (first === 'requests') return { page: 'mgr_all_requests' }
     if (first === 'recipes') return { page: 'mgr_recipes' }
     if (first === 'reports') return { page: 'mgr_reports' }
+    if (first === 'accounts') return { page: 'mgr_accounts' }
+    if (first === 'notifications') return { page: 'mgr_notifications' }
     return { page: 'mgr_dashboard' }
   }
 
@@ -94,6 +102,7 @@ function labRouteFromSegments(segments: string[], tab?: string): Route {
   if (first === 'dispatches' && second) return { page: 'lab_dispatch_detail', id: numericId(second) }
   if (first === 'dispatches') return { page: 'lab_dispatches', tab: tab || 'active' }
   if (first === 'equipment') return { page: 'lab_equipment' }
+  if (first === 'notifications') return { page: 'lab_notifications' }
   return { page: 'lab_dashboard' }
 }
 

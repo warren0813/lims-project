@@ -68,6 +68,8 @@ const STATUS_MAP: Record<string, { bg: string; color: string; label: string }> =
   // request statuses
   draft:       { bg: '#ebebf0', color: '#5a5a6e', label: 'Draft' },
   submitted:   { bg: '#fef0d4', color: '#b8720e', label: 'Submitted' },
+  waiting_sample_receive: { bg: '#fef4dd', color: '#a06618', label: 'Waiting Sample' },
+  final_check: { bg: '#ecebf3', color: '#4f4a8f', label: 'Final Check' },
   returned:    { bg: '#f9d7e0', color: '#a73d56', label: 'Returned' },
   rejected:    { bg: '#fde4e4', color: '#c0394a', label: 'Rejected' },
   cancelled:   { bg: '#ebebf0', color: '#777788', label: 'Cancelled' },
@@ -80,8 +82,11 @@ const STATUS_MAP: Record<string, { bg: string; color: string; label: string }> =
   '2w':        { bg: '#eef0ed', color: '#4d5a4f', label: '2 Weeks' },
   // equipment
   idle:        { bg: '#e7f0e9', color: '#2e6a47', label: 'Idle' },
+  working:     { bg: '#ecebf3', color: '#4f4a8f', label: 'Working' },
+  faulty:      { bg: '#fbe4e6', color: '#a93445', label: 'Faulty' },
   maintenance: { bg: '#fbe4e6', color: '#a93445', label: 'Maintenance' },
   // dispatch additional
+  ready_for_dispatch: { bg: '#fef0d4', color: '#b8720e', label: 'Queued' },
   dispatched:      { bg: '#ecedf0', color: '#5a5a6e', label: 'Dispatched' },
   unloaded:        { bg: '#e3eef3', color: '#356a82', label: 'Unloaded' },
   exception:       { bg: '#fde9d8', color: '#9a4715', label: 'Exception' },
@@ -133,7 +138,7 @@ interface ButtonProps {
   children?: ReactNode
   style?: CSSProperties
   disabled?: boolean
-  onClick?: () => void
+  onClick?: React.MouseEventHandler<HTMLButtonElement>
   type?: 'button' | 'submit' | 'reset'
 }
 

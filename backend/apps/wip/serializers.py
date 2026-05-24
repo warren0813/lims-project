@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from apps.wip.models import WipBatch
+from apps.wip.models import DispatchQueueProposal, WipBatch
 
 
 def wip_out(wip: WipBatch) -> dict[str, Any]:
@@ -41,4 +41,57 @@ def wip_out(wip: WipBatch) -> dict[str, Any]:
         "dispatch_count": wip.dispatches.count(),
         "created_at": wip.created_at,
         "updated_at": wip.updated_at,
+    }
+
+
+def proposal_out(proposal: DispatchQueueProposal) -> dict[str, Any]:
+    batches = []
+    for batch in proposal.batches.all():
+        items = []
+        for item in batch.items.all():
+            sample = item.sample
+            request = item.request
+            items.append(
+                {
+                    "id": str(item.id),
+                    "sample_id": str(sample.id),
+                    "sample_no": sample.sample_no,
+                    "request_id": str(request.id),
+                    "request_no": request.request_no,
+                    "fab_user": request.requester.username,
+                    "priority": request.priority,
+                    "order": item.order,
+                    "reason": item.reason,
+                }
+            )
+        batches.append(
+            {
+                "id": str(batch.id),
+                "experiment_type_id": str(batch.experiment_type_id),
+                "experiment_type_name": batch.experiment_type.name,
+                "recipe_id": str(batch.recipe_id),
+                "recipe_name": batch.recipe.name,
+                "equipment_type_id": str(batch.equipment_type_id),
+                "equipment_type_name": batch.equipment_type.name,
+                "equipment_id": str(batch.equipment_id) if batch.equipment_id else None,
+                "equipment_name": batch.equipment.name if batch.equipment else None,
+                "priority": batch.priority,
+                "order": batch.order,
+                "estimated_runtime_sec": batch.estimated_runtime_sec,
+                "reason": batch.reason,
+                "warnings": batch.warnings,
+                "items": items,
+            }
+        )
+    return {
+        "id": str(proposal.id),
+        "proposal_no": proposal.proposal_no,
+        "status": proposal.status,
+        "source": proposal.source,
+        "warnings": proposal.warnings,
+        "note": proposal.note,
+        "estimated_total_runtime_sec": proposal.estimated_total_runtime_sec,
+        "batches": batches,
+        "created_at": proposal.created_at,
+        "updated_at": proposal.updated_at,
     }

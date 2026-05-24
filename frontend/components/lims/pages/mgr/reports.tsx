@@ -2,6 +2,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { useRequests } from '@/lib/lims/hooks';
+import { api } from '@/lib/lims/api';
 
 const FabCard = ({ children, padding = 22, style }: any) => (
   <div
@@ -89,6 +90,30 @@ export function MgrReports() {
             {range === '7d' ? 'Last 7 days' : range === '30d' ? 'Last 30 days' : 'Last 90 days'}
           </button>
         ))}
+        <button
+          onClick={async () => {
+            const blob = await api.reports.downloadCsv()
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = 'lims-results.csv'
+            a.click()
+            URL.revokeObjectURL(url)
+          }}
+          style={{
+            marginLeft: 'auto',
+            padding: '8px 14px',
+            borderRadius: 8,
+            border: '1px solid rgba(0,0,0,0.12)',
+            background: '#1e1e24',
+            color: '#fff',
+            fontWeight: 600,
+            fontSize: 13,
+            cursor: 'pointer',
+          }}
+        >
+          Export CSV
+        </button>
       </div>
 
       <div

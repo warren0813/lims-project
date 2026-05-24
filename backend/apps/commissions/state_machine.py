@@ -17,62 +17,53 @@ class InvalidTransitionError(Exception):
 
 # Mapping: action -> set of allowed source statuses
 REQUEST_TRANSITIONS: dict[str, set[str]] = {
-    "submit": {RequestStatus.DRAFT, RequestStatus.RETURNED},
-    "approve": {RequestStatus.PENDING_APPROVAL},
-    "return": {RequestStatus.PENDING_APPROVAL},
-    "reject": {RequestStatus.PENDING_APPROVAL},
-    "ship": {RequestStatus.APPROVED},
+    "submit": {RequestStatus.DRAFT},
+    "approve": {RequestStatus.WAITING_APPROVAL},
+    "return": {RequestStatus.WAITING_APPROVAL},
+    "reject": {RequestStatus.WAITING_APPROVAL},
+    "ship": {RequestStatus.APPROVED, RequestStatus.WAITING_SAMPLE_RECEIVE},
     "cancel": {
         RequestStatus.DRAFT,
-        RequestStatus.PENDING_APPROVAL,
+        RequestStatus.WAITING_APPROVAL,
         RequestStatus.APPROVED,
-        RequestStatus.RETURNED,
-        RequestStatus.SAMPLE_SHIPPED,
-        RequestStatus.IN_PROGRESS,
+        RequestStatus.WAITING_SAMPLE_RECEIVE,
+        RequestStatus.RECEIVED,
+        RequestStatus.IN_WIP,
+        RequestStatus.QUEUED,
+        RequestStatus.RUNNING,
     },
-    "close": {RequestStatus.COMPLETED},
+    "close": {RequestStatus.FINAL_CHECK},
 }
 
 # Mapping: action -> target status
 REQUEST_TARGET: dict[str, str] = {
-    "submit": RequestStatus.PENDING_APPROVAL,
-    "approve": RequestStatus.APPROVED,
-    "return": RequestStatus.RETURNED,
+    "submit": RequestStatus.WAITING_APPROVAL,
+    "approve": RequestStatus.WAITING_SAMPLE_RECEIVE,
+    "return": RequestStatus.SUBMITTED,
     "reject": RequestStatus.REJECTED,
-    "ship": RequestStatus.SAMPLE_SHIPPED,
+    "ship": RequestStatus.WAITING_SAMPLE_RECEIVE,
     "cancel": RequestStatus.CANCELLED,
-    "close": RequestStatus.CLOSED,
+    "close": RequestStatus.COMPLETED,
 }
 
 SAMPLE_TRANSITIONS: dict[str, set[str]] = {
-    "ship": {SampleStatus.CREATED},
-    "receive": {SampleStatus.SHIPPED},
-    "reject_receiving": {SampleStatus.SHIPPED},
-    "report_lost": {SampleStatus.SHIPPED},
+    "receive": {SampleStatus.PENDING_RECEIVE},
+    "reject_receiving": {SampleStatus.PENDING_RECEIVE, SampleStatus.RECEIVED},
     "start_processing": {SampleStatus.RECEIVED},
-    "complete": {SampleStatus.PROCESSING},
-    "processing_exception": {SampleStatus.PROCESSING},
-    "void": {
-        SampleStatus.RECEIVING_EXCEPTION,
-        SampleStatus.PROCESSING_EXCEPTION,
-        SampleStatus.LOST,
-    },
-    "return": {
-        SampleStatus.RECEIVING_EXCEPTION,
-        SampleStatus.PROCESSING_EXCEPTION,
-    },
+    "queue": {SampleStatus.IN_WIP},
+    "run": {SampleStatus.QUEUED},
+    "complete": {SampleStatus.RUNNING},
+    "processing_exception": {SampleStatus.RUNNING},
 }
 
 SAMPLE_TARGET: dict[str, str] = {
-    "ship": SampleStatus.SHIPPED,
     "receive": SampleStatus.RECEIVED,
-    "reject_receiving": SampleStatus.RECEIVING_EXCEPTION,
-    "report_lost": SampleStatus.LOST,
-    "start_processing": SampleStatus.PROCESSING,
+    "reject_receiving": SampleStatus.REJECTED,
+    "start_processing": SampleStatus.IN_WIP,
+    "queue": SampleStatus.QUEUED,
+    "run": SampleStatus.RUNNING,
     "complete": SampleStatus.COMPLETED,
-    "processing_exception": SampleStatus.PROCESSING_EXCEPTION,
-    "void": SampleStatus.VOIDED,
-    "return": SampleStatus.RETURNED,
+    "processing_exception": SampleStatus.FAILED,
 }
 
 

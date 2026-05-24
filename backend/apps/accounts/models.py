@@ -5,9 +5,20 @@ from django.utils import timezone
 
 class Role(models.TextChoices):
     FAB_USER = "fab_user", "Fab User"
-    LAB_MEMBER = "lab_member", "Lab Member"
+    LAB_USER = "lab_user", "Lab User"
+    LAB_MEMBER = "lab_member", "Lab Member (legacy)"
     LAB_MANAGER = "lab_manager", "Lab Manager"
     ADMIN = "admin", "Admin"
+
+
+LAB_ROLE_VALUES = {Role.LAB_USER, Role.LAB_MEMBER, Role.LAB_MANAGER, Role.ADMIN}
+
+
+def normalize_role(role: str) -> str:
+    """Return the canonical public role value."""
+    if role == Role.LAB_MEMBER:
+        return Role.LAB_USER
+    return role
 
 
 class UserProfile(models.Model):
@@ -81,3 +92,31 @@ class AuditLog(models.Model):
             models.Index(fields=["created_at"]),
         ]
         ordering = ["-created_at"]
+
+
+class Notification(models.Model):
+    """Per-user workflow notification with optional entity link."""
+
+    recipient = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name="notifications"
+    )
+    role_context = models.CharField(max_length=40, blank=True)
+    notification_type = models.CharField(max_length=80)
+    title = models.CharField(max_length=180)
+    body = models.TextField(blank=True)
+    related_entity_type = models.CharField(max_length=80, blank=True)
+    related_entity_id = models.CharField(max_length=80, blank=True)
+    is_read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    read_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "notification"
+        indexes = [
+            models.Index(fields=["recipient", "is_read", "created_at"]),
+            models.Index(fields=["related_entity_type", "related_entity_id"]),
+        ]
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.recipient.username}: {self.title}"

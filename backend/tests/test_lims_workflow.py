@@ -33,7 +33,7 @@ def _auth(token: str) -> dict[str, str]:
 @pytest.mark.django_db
 @override_settings(CELERY_TASK_ALWAYS_EAGER=True, EQUIPMENT_SIMULATION_STEP_SECONDS=0)
 def test_full_demo_workflow_reaches_result(client, seeded):
-    lab_token = _login(client, "lab_member", "t26fnPyedon6aFz")
+    lab_token = _login(client, "lab_user", "t26fnPyedon6aFz")
 
     samples = client.get("/api/samples/", **_auth(lab_token)).json()
     assert len(samples) >= 2
@@ -46,7 +46,7 @@ def test_full_demo_workflow_reaches_result(client, seeded):
             **_auth(lab_token),
         )
         assert response.status_code == 200, response.content
-        assert response.json()["status"] == "waiting_wip"
+        assert response.json()["status"] == "received"
 
     response = client.post(
         "/api/wip/auto-create",
@@ -78,7 +78,7 @@ def test_full_demo_workflow_reaches_result(client, seeded):
 @pytest.mark.django_db
 @override_settings(CELERY_TASK_ALWAYS_EAGER=True, EQUIPMENT_SIMULATION_STEP_SECONDS=0)
 def test_failed_dispatch_can_retry(client, seeded):
-    lab_token = _login(client, "lab_member", "t26fnPyedon6aFz")
+    lab_token = _login(client, "lab_user", "t26fnPyedon6aFz")
     for sample in client.get("/api/samples/", **_auth(lab_token)).json():
         client.post(
             f"/api/samples/{sample['id']}/receive",

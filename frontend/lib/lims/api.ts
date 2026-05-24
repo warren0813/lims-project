@@ -13,6 +13,11 @@ export interface User {
   department?: string
 }
 
+export interface BootstrapStatus {
+  needsBootstrap: boolean
+  userCount: number
+}
+
 export interface ExperimentType {
   id: ID
   code: string
@@ -110,6 +115,8 @@ export interface DispatchRow {
   dispatchedAtIso?: string | null
   completedAt?: string | null
   completedAtIso?: string | null
+  finalConfirmedAt?: string | null
+  finalConfirmationNotes?: string
   created: string | null
   estimatedDurationSeconds?: number | null
   result?: DispatchResult | null
@@ -154,6 +161,71 @@ export interface RecipeRow {
   maxBatchSize?: number
 }
 
+export interface NotificationRow {
+  id: number
+  type: string
+  title: string
+  body: string
+  relatedEntityType: string
+  relatedEntityId: string
+  read: boolean
+  createdAt: string | null
+}
+
+export interface UserAdminRow {
+  id: number
+  username: string
+  email: string
+  role: string
+  department: string
+  isActive: boolean
+  isStaff: boolean
+  dateJoined: string
+}
+
+export interface ProposalItemRow {
+  id: ID
+  sampleId: ID
+  sampleNo: string
+  requestId: ID
+  requestNo: string
+  fabUser: string
+  priority: string
+  order: number
+  reason: string
+}
+
+export interface ProposalBatchRow {
+  id: ID
+  experimentTypeId: ID
+  experimentTypeName: string
+  recipeId: ID
+  recipeName: string
+  equipmentTypeId: ID
+  equipmentTypeName: string
+  equipmentId: ID | null
+  equipmentName: string | null
+  priority: string
+  order: number
+  estimatedRuntimeSec: number
+  reason: string
+  warnings: string[]
+  items: ProposalItemRow[]
+}
+
+export interface ProposalRow {
+  id: ID
+  proposalNo: string
+  status: string
+  source: string
+  warnings: string[]
+  note: string
+  estimatedTotalRuntimeSec: number
+  batches: ProposalBatchRow[]
+  created: string | null
+  updated: string | null
+}
+
 export interface HistoryItem {
   action: string
   by: string
@@ -163,8 +235,9 @@ export interface HistoryItem {
 
 const ROLE_MAP: Record<string, string> = {
   fab_user: 'fab_user',
-  lab_member: 'lab_member',
-  lab_staff: 'lab_member',
+  lab_user: 'lab_user',
+  lab_member: 'lab_user',
+  lab_staff: 'lab_user',
   lab_manager: 'lab_manager',
   admin: 'lab_manager',
 }
@@ -172,12 +245,18 @@ const ROLE_MAP: Record<string, string> = {
 const REQUEST_STATUS_MAP: Record<string, string> = {
   draft: 'draft',
   submitted: 'submitted',
+  waiting_approval: 'submitted',
   pending_approval: 'submitted',
-  approved: 'in_progress',
+  approved: 'waiting_sample_receive',
+  waiting_sample_receive: 'waiting_sample_receive',
+  received: 'in_progress',
   sample_received: 'in_progress',
+  in_wip: 'in_progress',
   wip_created: 'in_progress',
+  queued: 'in_progress',
   dispatched: 'in_progress',
   running: 'in_progress',
+  final_check: 'final_check',
   completed: 'completed',
   failed: 'failed',
   rejected: 'rejected',
@@ -188,7 +267,9 @@ const SAMPLE_STATUS_MAP: Record<string, string> = {
   pending_receive: 'incoming',
   received: 'received',
   waiting_wip: 'received',
+  rejected: 'rejected',
   in_wip: 'in_wip',
+  queued: 'in_wip',
   dispatched: 'in_wip',
   running: 'in_wip',
   completed: 'completed',
@@ -199,11 +280,11 @@ const SAMPLE_STATUS_MAP: Record<string, string> = {
 
 const DISPATCH_STATUS_MAP: Record<string, string> = {
   pending: 'pending',
-  queued: 'pending',
+  queued: 'ready_for_dispatch',
   assigned: 'dispatched',
   running: 'running',
   paused: 'running',
-  completed: 'result_recorded',
+  completed: 'completed',
   failed: 'exception',
   retrying: 'exception',
   cancelled: 'aborted',
@@ -223,6 +304,43 @@ function urgencyFromPriority(priority?: string) {
   if (priority === 'urgent') return '3d'
   if (priority === 'high') return '1w'
   return '2w'
+}
+
+function priorityFromUrgency(urgency?: string) {
+  if (urgency === '3d') return 'urgent'
+  if (urgency === '1w') return 'high'
+  return 'normal'
+}
+
+function normalizeRequestPayload(payload: any) {
+  const experimentTypeId = payload.experiment_type_id
+    ?? payload.experimentTypeId
+    ?? payload.experiment_type_ids?.[0]
+    ?? payload.experimentTypeIds?.[0]
+  return {
+    title: payload.title,
+    description: payload.description ?? payload.note ?? '',
+    department: payload.department ?? 'Fab Operations',
+    project_code: payload.project_code ?? payload.projectCode ?? '',
+    priority: payload.priority ?? priorityFromUrgency(payload.urgency),
+    experiment_type_id: experimentTypeId,
+    preferred_recipe_id: payload.preferred_recipe_id ?? payload.preferredRecipeId ?? null,
+    material_type: payload.material_type ?? payload.materialType ?? 'Silicon',
+    target_measurement: payload.target_measurement ?? payload.targetMeasurement ?? '',
+    expected_output_format: payload.expected_output_format ?? payload.expectedOutputFormat ?? 'json',
+    special_instruction: payload.special_instruction ?? payload.specialInstruction ?? '',
+    safety_rules_confirmed: payload.safety_rules_confirmed ?? payload.safetyRulesConfirmed ?? true,
+    required_completion_date: payload.required_completion_date ?? payload.requiredCompletionDate ?? null,
+    samples: (payload.samples || []).map((sample: any, index: number) => ({
+      sample_name: sample.sample_name ?? sample.sampleName ?? sample.wafer_id ?? sample.wafer ?? `Sample ${index + 1}`,
+      lot_id: sample.lot_id ?? sample.lotId ?? payload.project_code ?? payload.projectCode ?? 'LOT',
+      wafer_id: sample.wafer_id ?? sample.waferId ?? sample.wafer ?? '',
+      material_type: sample.material_type ?? sample.materialType ?? payload.material_type ?? payload.materialType ?? 'Silicon',
+      quantity: sample.quantity ?? 1,
+      description: sample.description ?? '',
+      handling_notes: sample.handling_notes ?? sample.handlingNotes ?? '',
+    })),
+  }
 }
 
 function normalizeSampleRow(s: any): SampleRow {
@@ -345,6 +463,8 @@ function normalizeDispatch(d: any): DispatchRow {
     dispatchedAtIso: d.queued_at ?? d.started_at ?? null,
     completedAt: formatTimestamp(d.finished_at),
     completedAtIso: d.finished_at ?? null,
+    finalConfirmedAt: formatTimestamp(d.final_confirmed_at),
+    finalConfirmationNotes: d.final_confirmation_notes || '',
     created: formatTimestamp(d.created_at),
     result: d.result ? {
       summary: d.result.summary,
@@ -352,6 +472,73 @@ function normalizeDispatch(d: any): DispatchRow {
       data: d.result.data || {},
       source: d.result.data_source,
     } : null,
+  }
+}
+
+function normalizeNotification(n: any): NotificationRow {
+  return {
+    id: Number(n.id),
+    type: n.notification_type,
+    title: n.title,
+    body: n.body || '',
+    relatedEntityType: n.related_entity_type || '',
+    relatedEntityId: n.related_entity_id || '',
+    read: Boolean(n.is_read),
+    createdAt: formatTimestamp(n.created_at),
+  }
+}
+
+function normalizeUserAdmin(u: any): UserAdminRow {
+  return {
+    id: Number(u.id),
+    username: u.username,
+    email: u.email || '',
+    role: normalizeRole(u.role),
+    department: u.department || '',
+    isActive: Boolean(u.is_active),
+    isStaff: Boolean(u.is_staff),
+    dateJoined: u.date_joined || '',
+  }
+}
+
+function normalizeProposal(p: any): ProposalRow {
+  return {
+    id: String(p.id),
+    proposalNo: p.proposal_no,
+    status: p.status,
+    source: p.source,
+    warnings: p.warnings || [],
+    note: p.note || '',
+    estimatedTotalRuntimeSec: p.estimated_total_runtime_sec || 0,
+    batches: (p.batches || []).map((b: any) => ({
+      id: String(b.id),
+      experimentTypeId: String(b.experiment_type_id),
+      experimentTypeName: b.experiment_type_name,
+      recipeId: String(b.recipe_id),
+      recipeName: b.recipe_name,
+      equipmentTypeId: String(b.equipment_type_id),
+      equipmentTypeName: b.equipment_type_name,
+      equipmentId: b.equipment_id ? String(b.equipment_id) : null,
+      equipmentName: b.equipment_name || null,
+      priority: b.priority,
+      order: b.order,
+      estimatedRuntimeSec: b.estimated_runtime_sec,
+      reason: b.reason || '',
+      warnings: b.warnings || [],
+      items: (b.items || []).map((item: any) => ({
+        id: String(item.id),
+        sampleId: String(item.sample_id),
+        sampleNo: item.sample_no,
+        requestId: String(item.request_id),
+        requestNo: item.request_no,
+        fabUser: item.fab_user,
+        priority: item.priority,
+        order: item.order,
+        reason: item.reason || '',
+      })),
+    })),
+    created: formatTimestamp(p.created_at),
+    updated: formatTimestamp(p.updated_at),
   }
 }
 
@@ -505,15 +692,44 @@ export const api = {
         store.clear()
       }
     },
-    async me(): Promise<User> {
-      const out = await call<any>('/auth/me')
+    async bootstrapStatus(): Promise<BootstrapStatus> {
+      const out = await call<any>('/auth/bootstrap-status')
       return {
+        needsBootstrap: Boolean(out.needs_bootstrap),
+        userCount: Number(out.user_count || 0),
+      }
+    },
+    async bootstrapManager(payload: { username: string; password: string; email?: string; department?: string }): Promise<User> {
+      const out = await call<any>('/auth/bootstrap-manager', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+      store.set('lims.access', out.access_token)
+      store.set('lims.refresh', out.refresh_token)
+      const user = {
         id: out.id,
         username: out.username,
         role: normalizeRole(out.role),
         raw_role: out.role,
         department: out.department,
       }
+      store.set('lims.user', JSON.stringify(user))
+      return user
+    },
+    async me(): Promise<User> {
+      const out = await call<any>('/auth/me')
+      const user = {
+        id: out.id,
+        username: out.username,
+        role: normalizeRole(out.role),
+        raw_role: out.role,
+        department: out.department,
+      }
+      store.set('lims.user', JSON.stringify(user))
+      return user
+    },
+    clearLocal() {
+      store.clear()
     },
     cachedUser(): User | null {
       try {
@@ -536,18 +752,75 @@ export const api = {
         labCategory: e.lab_category,
       }))
     },
+    async create(payload: any): Promise<ExperimentType> {
+      const out = await call<any>('/experiment-types/', {
+        method: 'POST',
+        body: JSON.stringify({
+          code: payload.code,
+          name: payload.name,
+          description: payload.description || '',
+          lab_category: payload.lab_category || payload.labCategory || 'MA',
+        }),
+      })
+      return {
+        id: String(out.id),
+        code: out.code,
+        name: out.name,
+        description: out.description,
+        labCategory: out.lab_category,
+      }
+    },
   },
 
   equipment: {
+    types: {
+      async list(): Promise<any[]> {
+        return call<any[]>('/equipment/types')
+      },
+      async create(payload: any): Promise<any> {
+        return call<any>('/equipment/types', {
+          method: 'POST',
+          body: JSON.stringify({
+            code: payload.code,
+            name: payload.name,
+            queue_name: payload.queue_name || payload.queueName || 'queue.probe',
+            description: payload.description || '',
+          }),
+        })
+      },
+    },
     async list(q: Record<string, string> = {}): Promise<EquipmentRow[]> {
       const out = await call<any[]>(`/equipment/?${new URLSearchParams(q)}`)
       return out.map(normalizeEquipment)
     },
     async create(payload: any): Promise<EquipmentRow> {
-      return normalizeEquipment(await call<any>('/equipment/', { method: 'POST', body: JSON.stringify(payload) }))
+      return normalizeEquipment(await call<any>('/equipment/', {
+        method: 'POST',
+        body: JSON.stringify({
+          equipment_code: payload.equipment_code ?? payload.equipmentCode,
+          name: payload.name,
+          model_name: payload.model_name ?? payload.modelName ?? payload.model,
+          equipment_type_id: payload.equipment_type_id ?? payload.equipmentTypeId,
+          capacity: payload.capacity,
+          location: payload.location || '',
+          recipe_ids: payload.recipe_ids ?? payload.recipeIds ?? [],
+        }),
+      }))
     },
     async update(id: ID, payload: any): Promise<EquipmentRow> {
-      return normalizeEquipment(await call<any>(`/equipment/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }))
+      const body: Record<string, unknown> = {}
+      if (payload.name !== undefined) body.name = payload.name
+      if (payload.model_name !== undefined || payload.modelName !== undefined || payload.model !== undefined) {
+        body.model_name = payload.model_name ?? payload.modelName ?? payload.model
+      }
+      if (payload.capacity !== undefined) body.capacity = payload.capacity
+      if (payload.status !== undefined) body.status = payload.status === 'available' ? 'idle' : payload.status
+      if (payload.is_active !== undefined) body.is_active = payload.is_active
+      if (payload.location !== undefined) body.location = payload.location
+      if (payload.recipe_ids !== undefined || payload.recipeIds !== undefined || payload.capability_recipe_ids !== undefined) {
+        body.recipe_ids = payload.recipe_ids ?? payload.recipeIds ?? payload.capability_recipe_ids
+      }
+      return normalizeEquipment(await call<any>(`/equipment/${id}`, { method: 'PATCH', body: JSON.stringify(body) }))
     },
   },
 
@@ -557,10 +830,42 @@ export const api = {
       return out.map(normalizeRecipe)
     },
     async create(payload: any): Promise<RecipeRow> {
-      return normalizeRecipe(await call<any>('/recipes/', { method: 'POST', body: JSON.stringify(payload) }))
+      return normalizeRecipe(await call<any>('/recipes/', {
+        method: 'POST',
+        body: JSON.stringify({
+          recipe_code: payload.recipe_code ?? payload.recipeCode,
+          name: payload.name,
+          description: payload.description || '',
+          experiment_type_id: payload.experiment_type_id ?? payload.experimentTypeId,
+          equipment_type_id: payload.equipment_type_id ?? payload.equipmentTypeId,
+          parameters: payload.parameters ?? payload.params ?? {},
+          estimated_runtime_sec: payload.estimated_runtime_sec ?? payload.estimatedRuntimeSec ?? 60,
+          max_batch_size: payload.max_batch_size ?? payload.maxBatchSize ?? 10,
+          material_constraints: payload.material_constraints ?? payload.materialConstraints ?? {},
+          safety_constraints: payload.safety_constraints ?? payload.safetyConstraints ?? {},
+          version: payload.version ?? 1,
+        }),
+      }))
     },
     async update(id: ID, payload: any): Promise<RecipeRow> {
-      return normalizeRecipe(await call<any>(`/recipes/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }))
+      const body: Record<string, unknown> = {}
+      if (payload.name !== undefined) body.name = payload.name
+      if (payload.description !== undefined) body.description = payload.description
+      if (payload.parameters !== undefined || payload.params !== undefined) body.parameters = payload.parameters ?? payload.params
+      if (payload.estimated_runtime_sec !== undefined || payload.estimatedRuntimeSec !== undefined) {
+        body.estimated_runtime_sec = payload.estimated_runtime_sec ?? payload.estimatedRuntimeSec
+      }
+      if (payload.max_batch_size !== undefined || payload.maxBatchSize !== undefined) {
+        body.max_batch_size = payload.max_batch_size ?? payload.maxBatchSize
+      }
+      if (payload.material_constraints !== undefined || payload.materialConstraints !== undefined) {
+        body.material_constraints = payload.material_constraints ?? payload.materialConstraints
+      }
+      if (payload.safety_constraints !== undefined || payload.safetyConstraints !== undefined) {
+        body.safety_constraints = payload.safety_constraints ?? payload.safetyConstraints
+      }
+      if (payload.is_active !== undefined) body.is_active = payload.is_active
+      return normalizeRecipe(await call<any>(`/recipes/${id}`, { method: 'PATCH', body: JSON.stringify(body) }))
     },
     async remove(id: ID): Promise<void> {
       await call<any>(`/recipes/${id}`, { method: 'DELETE' })
@@ -580,13 +885,26 @@ export const api = {
       return normalizeRequestDetail(await call<any>(`/requests/${id}`))
     },
     async create(payload: any): Promise<RequestDetail> {
-      return normalizeRequestDetail(await call<any>('/requests/', { method: 'POST', body: JSON.stringify(payload) }))
+      return normalizeRequestDetail(await call<any>('/requests/drafts', { method: 'POST', body: JSON.stringify(normalizeRequestPayload(payload)) }))
     },
     async createDraft(payload: any): Promise<RequestDetail> {
-      return normalizeRequestDetail(await call<any>('/requests/drafts', { method: 'POST', body: JSON.stringify(payload) }))
+      return normalizeRequestDetail(await call<any>('/requests/drafts', { method: 'POST', body: JSON.stringify(normalizeRequestPayload(payload)) }))
     },
     async update(id: ID, payload: any): Promise<RequestDetail> {
-      return normalizeRequestDetail(await call<any>(`/requests/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }))
+      const body = normalizeRequestPayload(payload)
+      return normalizeRequestDetail(await call<any>(`/requests/${id}`, { method: 'PATCH', body: JSON.stringify({
+        title: body.title,
+        description: body.description,
+        department: body.department,
+        project_code: body.project_code,
+        priority: body.priority,
+        preferred_recipe_id: body.preferred_recipe_id,
+        required_completion_date: body.required_completion_date,
+        target_measurement: body.target_measurement,
+        expected_output_format: body.expected_output_format,
+        special_instruction: body.special_instruction,
+        safety_rules_confirmed: body.safety_rules_confirmed,
+      }) }))
     },
     async submit(id: ID): Promise<RequestDetail> {
       return normalizeRequestDetail(await call<any>(`/requests/${id}/submit`, { method: 'POST' }))
@@ -596,6 +914,9 @@ export const api = {
     },
     async reject(id: ID, comment: string): Promise<RequestDetail> {
       return normalizeRequestDetail(await call<any>(`/requests/${id}/reject`, { method: 'POST', body: JSON.stringify({ comment }) }))
+    },
+    async moreInfo(id: ID, comment: string): Promise<RequestDetail> {
+      return normalizeRequestDetail(await call<any>(`/requests/${id}/more-info`, { method: 'POST', body: JSON.stringify({ comment }) }))
     },
     async cancel(id: ID, reason = 'Cancelled by user'): Promise<RequestDetail> {
       return normalizeRequestDetail(await call<any>(`/requests/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) }))
@@ -614,7 +935,7 @@ export const api = {
       return normalizeSampleRow(await call<any>(`/samples/${id}/receive`, { method: 'POST', body: JSON.stringify(payload) }))
     },
     async reject(id: ID, reason: string): Promise<SampleRow> {
-      return normalizeSampleRow(await call<any>(`/samples/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status: 'returned', reason }) }))
+      return normalizeSampleRow(await call<any>(`/samples/${id}/reject`, { method: 'POST', body: JSON.stringify({ comment: reason }) }))
     },
   },
 
@@ -631,6 +952,30 @@ export const api = {
     },
     async autoCreate(): Promise<WipRow[]> {
       const out = await call<any[]>('/wip/auto-create', { method: 'POST', body: JSON.stringify({}) })
+      return out.map(normalizeWip)
+    },
+    async autoPropose(maxBatches?: number): Promise<ProposalRow> {
+      const out = await call<any>('/wip/auto-propose', {
+        method: 'POST',
+        body: JSON.stringify(maxBatches ? { max_batches: maxBatches } : {}),
+      })
+      return normalizeProposal(out)
+    },
+    async proposals(): Promise<ProposalRow[]> {
+      const out = await call<any[]>('/wip/proposals')
+      return out.map(normalizeProposal)
+    },
+    async getProposal(id: ID): Promise<ProposalRow> {
+      return normalizeProposal(await call<any>(`/wip/proposals/${id}`))
+    },
+    async updateProposalBatch(proposalId: ID, batchId: ID, payload: any): Promise<ProposalRow> {
+      return normalizeProposal(await call<any>(`/wip/proposals/${proposalId}/batches/${batchId}`, { method: 'PATCH', body: JSON.stringify(payload) }))
+    },
+    async removeProposalItem(proposalId: ID, itemId: ID): Promise<ProposalRow> {
+      return normalizeProposal(await call<any>(`/wip/proposals/${proposalId}/items/${itemId}`, { method: 'DELETE' }))
+    },
+    async confirmProposal(id: ID): Promise<WipRow[]> {
+      const out = await call<any[]>(`/wip/proposals/${id}/confirm`, { method: 'POST' })
       return out.map(normalizeWip)
     },
     async lock(id: ID): Promise<WipRow> {
@@ -665,6 +1010,9 @@ export const api = {
     async cancel(id: ID): Promise<DispatchRow> {
       return normalizeDispatch(await call<any>(`/dispatches/${id}/cancel`, { method: 'POST' }))
     },
+    async finalConfirm(id: ID, notes = ''): Promise<DispatchRow> {
+      return normalizeDispatch(await call<any>(`/dispatches/${id}/final-confirm`, { method: 'POST', body: JSON.stringify({ notes }) }))
+    },
     async logs(id: ID) {
       return call<any[]>(`/dispatches/${id}/logs`)
     },
@@ -679,13 +1027,76 @@ export const api = {
       return call<any>('/reports/summary')
     },
     async equipmentUtilization() {
-      return call<any>('/reports/equipment-utilization')
+      const out = await call<any>('/reports/equipment-utilization')
+      return {
+        ...out,
+        data: (out.data || []).map((row: any) => ({
+          ...row,
+          equipment: {
+            id: row.equipment_id,
+            name: row.equipment_name,
+          },
+          wip_count: row.dispatch_count ?? 0,
+          sample_count: row.completed_count ?? 0,
+        })),
+      }
     },
     async requestStatistics() {
-      return call<any>('/reports/request-statistics')
+      const out = await call<any>('/reports/request-statistics')
+      return {
+        ...out,
+        total_requests: out.total_requests ?? out.total ?? 0,
+        status_distribution: out.status_distribution ?? out.distribution ?? {},
+      }
     },
     async throughput() {
       return call<any>('/reports/throughput')
+    },
+    csvUrl() {
+      const token = store.get('lims.access')
+      return `${DEFAULT_BASE}/reports/results.csv?token=${encodeURIComponent(token || '')}`
+    },
+    async downloadCsv(): Promise<Blob> {
+      const res = await rawFetch('/reports/results.csv')
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+      return res.blob()
+    },
+    async pdfCapability() {
+      return call<any>('/reports/results.pdf')
+    },
+  },
+
+  notifications: {
+    async list(unread?: boolean): Promise<NotificationRow[]> {
+      const q = unread == null ? '' : `?${new URLSearchParams({ unread: String(unread) })}`
+      const out = await call<any[]>(`/notifications/${q}`)
+      return out.map(normalizeNotification)
+    },
+    async unreadCount(): Promise<number> {
+      const out = await call<any>('/notifications/unread-count')
+      return Number(out.count || 0)
+    },
+    async markRead(id: number): Promise<NotificationRow> {
+      return normalizeNotification(await call<any>(`/notifications/${id}/read`, { method: 'POST' }))
+    },
+    async markAllRead(): Promise<{ updated: number }> {
+      return call<any>('/notifications/mark-all-read', { method: 'POST' })
+    },
+  },
+
+  users: {
+    async list(q: Record<string, string> = {}): Promise<UserAdminRow[]> {
+      const out = await call<any[]>(`/users/?${new URLSearchParams(q)}`)
+      return out.map(normalizeUserAdmin)
+    },
+    async create(payload: any): Promise<UserAdminRow> {
+      return normalizeUserAdmin(await call<any>('/users/', { method: 'POST', body: JSON.stringify(payload) }))
+    },
+    async update(id: number, payload: any): Promise<UserAdminRow> {
+      return normalizeUserAdmin(await call<any>(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }))
+    },
+    async resetPassword(id: number): Promise<{ detail: string }> {
+      return call<any>(`/users/${id}/reset-password`, { method: 'POST' })
     },
   },
 
@@ -696,5 +1107,16 @@ export const api = {
     },
   },
 }
+
+export const authApi = api.auth
+export const requestApi = api.requests
+export const sampleApi = api.samples
+export const wipApi = api.wips
+export const dispatchApi = api.dispatches
+export const equipmentApi = api.equipment
+export const recipeApi = api.recipes
+export const reportApi = api.reports
+export const notificationApi = api.notifications
+export const userApi = api.users
 
 export default api

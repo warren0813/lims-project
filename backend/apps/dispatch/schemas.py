@@ -16,6 +16,10 @@ class DispatchRetryIn(Schema):
     simulate_failure: bool = False
 
 
+class FinalConfirmIn(Schema):
+    notes: str = ""
+
+
 class ResultOut(Schema):
     id: str
     summary: str
@@ -56,6 +60,8 @@ class DispatchOut(Schema):
     queued_at: datetime | None
     started_at: datetime | None
     finished_at: datetime | None
+    final_confirmed_at: datetime | None
+    final_confirmation_notes: str
     result: ResultOut | None
     created_at: datetime
     updated_at: datetime

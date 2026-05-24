@@ -2,16 +2,16 @@
 
 from django.http import HttpRequest
 
-from apps.accounts.models import Role, UserProfile
+from apps.accounts.models import LAB_ROLE_VALUES, Role, UserProfile
 
 
 def has_lab_role(request: HttpRequest) -> bool:
-    """Return True if the user is lab_member, lab_manager, or admin."""
+    """Return True if the user is lab_user, lab_manager, or admin."""
     try:
         role = request.auth.profile.role
     except (UserProfile.DoesNotExist, AttributeError):
         return False
-    return role in (Role.LAB_MEMBER, Role.LAB_MANAGER, Role.ADMIN)
+    return role in LAB_ROLE_VALUES
 
 
 def has_manager_role(request: HttpRequest) -> bool:
