@@ -23,26 +23,7 @@ type ReferenceWindow = Window & {
   FabApp?: React.ComponentType<any>
   LabApp?: React.ComponentType<any>
   MgrApp?: React.ComponentType<any>
-  useTweaks?: (defaults: Record<string, string>) => [Record<string, string>, (key: string | Record<string, string>, value?: string) => void]
-  TweaksPanel?: React.ComponentType<{ children: React.ReactNode }>
-  TweakSection?: React.ComponentType<{ label: string }>
-  TweakColor?: React.ComponentType<any>
-  TweakButton?: React.ComponentType<any>
 }
-
-const TWEAK_DEFAULTS = {
-  signInBg: "#1e1e24",
-  signInFg: "#ffffff",
-  fabBg: "linear-gradient(135deg, #f4a8bf, #6c67b8)",
-}
-
-const SIGNIN_OPTIONS = ["#6c67b8", "#1e1e24", "#f4a8bf", "#bbb7e8"]
-const FAB_OPTIONS = [
-  "linear-gradient(135deg, #f4a8bf, #bbb7e8)",
-  "linear-gradient(135deg, #bbb7e8, #6c67b8)",
-  "linear-gradient(135deg, #f4a8bf, #6c67b8)",
-  "#1e1e24",
-]
 
 export function ReferenceLimsApp({ initialRoute }: { initialRoute?: Route } = {}) {
   return (
@@ -68,7 +49,6 @@ function useReferenceBundle() {
       await import("./reference/shell.jsx")
       await import("./reference/login.jsx")
       await import("./reference/postlogin.jsx")
-      await import("./reference/tweaks-panel.jsx")
       await import("./reference/fab.jsx")
       await import("./reference/lab.jsx")
       await import("./reference/mgr.jsx")
@@ -95,8 +75,10 @@ function ReferenceAppContent({ initialRoute }: { initialRoute?: Route }) {
   const [route, setRoute] = useState<Route>(initialRoute ?? { page: "lab_dashboard" })
 
   const navigate = useCallback((nextRoute: Route) => {
-    setRoute(nextRoute)
-    if (user) router.push(routeToPath(nextRoute, user.role))
+    setRoute((current) => sameRoute(current, nextRoute) ? current : nextRoute)
+    if (!user) return
+    const nextPath = routeToPath(nextRoute, user.role)
+    if (currentPathWithSearch() !== nextPath) router.push(nextPath)
   }, [router, user])
 
   const onLogin = useCallback((nextUser: User) => {
@@ -105,24 +87,29 @@ function ReferenceAppContent({ initialRoute }: { initialRoute?: Route }) {
     const nextRoute = initialRoute && isRouteAllowedForRole(initialRoute, normalizedUser.role)
       ? initialRoute
       : defaultRouteForRole(normalizedUser.role)
-    setRoute(nextRoute)
-    router.push(routeToPath(nextRoute, normalizedUser.role))
+    setRoute((current) => sameRoute(current, nextRoute) ? current : nextRoute)
+    const nextPath = routeToPath(nextRoute, normalizedUser.role)
+    if (currentPathWithSearch() !== nextPath) router.push(nextPath)
   }, [adoptUser, initialRoute, router])
 
   const onLogout = useCallback(() => {
     logout()
-    setRoute({ page: "lab_dashboard" })
-    router.push("/")
+    setRoute((current) => sameRoute(current, { page: "lab_dashboard" }) ? current : { page: "lab_dashboard" })
+    if (currentPathWithSearch() !== "/") router.push("/")
   }, [logout, router])
 
   useEffect(() => {
-    if (!user) return
+    if (!user) {
+      if (!loading && currentPathWithSearch() !== "/") router.replace("/")
+      return
+    }
     const nextRoute = initialRoute && isRouteAllowedForRole(initialRoute, user.role)
       ? initialRoute
       : defaultRouteForRole(user.role)
-    setRoute(nextRoute)
-    router.replace(routeToPath(nextRoute, user.role))
-  }, [initialRoute, router, user])
+    const nextPath = routeToPath(nextRoute, user.role)
+    setRoute((current) => sameRoute(current, nextRoute) ? current : nextRoute)
+    if (currentPathWithSearch() !== nextPath) router.replace(nextPath)
+  }, [initialRoute, loading, router, user])
 
   const win = typeof window !== "undefined" ? window as ReferenceWindow : undefined
 
@@ -134,7 +121,7 @@ function ReferenceAppContent({ initialRoute }: { initialRoute?: Route }) {
     )
   }
 
-  const tweaksUI = <TweaksUI />
+  const tweaksUI = null
 
   if (!user) {
     const LoginPage = win.LoginPage
@@ -251,58 +238,15 @@ function ManagerRoot({ user, route, navigate, onLogout, tweaksUI }: RootProps) {
   )
 }
 
-function TweaksUI() {
-  const win = window as ReferenceWindow
-  if (!win.useTweaks || !win.TweaksPanel || !win.TweakSection || !win.TweakColor || !win.TweakButton) return null
-  return <TweaksUIReady />
+function currentPathWithSearch(): string {
+  if (typeof window === "undefined") return ""
+  return `${window.location.pathname}${window.location.search}`
 }
 
-function TweaksUIReady() {
-  const win = window as ReferenceWindow
-  const TweaksPanel = win.TweaksPanel!
-  const TweakSection = win.TweakSection!
-  const TweakColor = win.TweakColor!
-  const TweakButton = win.TweakButton!
-  const [t, setTweak] = win.useTweaks!(TWEAK_DEFAULTS)
-
-  useEffect(() => {
-    const root = document.documentElement
-    root.style.setProperty("--tweak-signin-bg", t.signInBg)
-    root.style.setProperty("--tweak-signin-fg", t.signInFg)
-    root.style.setProperty("--tweak-fab-bg", t.fabBg)
-  }, [t.fabBg, t.signInBg, t.signInFg])
-
-  return (
-    <TweaksPanel>
-      <TweakSection label="Sign in button" />
-      <TweakColor label="Background" value={t.signInBg} options={SIGNIN_OPTIONS} onChange={(value: string) => setTweak("signInBg", value)} />
-      <TweakColor label="Text" value={t.signInFg} options={["#ffffff", "#1e1e24", "#f7f8fa"]} onChange={(value: string) => setTweak("signInFg", value)} />
-      <TweakSection label="fab_user icon" />
-      <FabGradient value={t.fabBg} onChange={(value) => setTweak("fabBg", value)} />
-      <TweakButton onClick={() => setTweak(TWEAK_DEFAULTS)}>Reset to theme defaults</TweakButton>
-    </TweaksPanel>
-  )
-}
-
-function FabGradient({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "6px 10px 10px" }}>
-      <div style={{ fontSize: 11, color: "#5a5a6e", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase" }}>fab_user icon</div>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        {FAB_OPTIONS.map((gradient) => {
-          const active = value === gradient
-          return (
-            <button key={gradient} type="button" onClick={() => onChange(gradient)} title={gradient} style={{
-              width: 36, height: 36, borderRadius: 8, padding: 0,
-              background: gradient, cursor: "pointer",
-              border: active ? "2px solid #1e1e24" : "1px solid rgba(0,0,0,0.15)",
-              boxShadow: active ? "0 0 0 2px rgba(108,103,184,0.25)" : "none",
-            }} />
-          )
-        })}
-      </div>
-    </div>
-  )
+function sameRoute(left: Route, right: Route): boolean {
+  return left.page === right.page
+    && left.id === right.id
+    && left.tab === right.tab
 }
 
 interface RootProps {

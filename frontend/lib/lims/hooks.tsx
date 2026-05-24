@@ -36,14 +36,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false
     async function loadSession() {
-      if (typeof window !== 'undefined' && window.location.pathname === '/') {
-        api.auth.clearLocal()
-        if (!cancelled) {
-          setUser(null)
-          setLoading(false)
-        }
-        return
-      }
       try {
         const current = await api.auth.me()
         if (!cancelled) {
