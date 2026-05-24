@@ -64,6 +64,7 @@ class ProposalItemOut(Schema):
     id: str
     sample_id: str
     sample_no: str
+    sample_status: str
     request_id: str
     request_no: str
     fab_user: str
@@ -82,6 +83,10 @@ class ProposalBatchOut(Schema):
     equipment_type_name: str
     equipment_id: str | None
     equipment_name: str | None
+    equipment_capacity: int | None
+    equipment_status: str | None
+    equipment_queue_name: str | None
+    recipe_max_batch_size: int
     priority: str
     order: int
     estimated_runtime_sec: int

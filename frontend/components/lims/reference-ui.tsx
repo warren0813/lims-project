@@ -73,6 +73,7 @@ function ReferenceAppContent({ initialRoute }: { initialRoute?: Route }) {
   const { user, loading, adoptUser, logout } = useAuth()
   const bundleReady = useReferenceBundle()
   const [route, setRoute] = useState<Route>(initialRoute ?? { page: "lab_dashboard" })
+  const unreadCount = useUnreadNotificationCount(Boolean(user))
 
   const navigate = useCallback((nextRoute: Route) => {
     setRoute((current) => sameRoute(current, nextRoute) ? current : nextRoute)
@@ -134,21 +135,50 @@ function ReferenceAppContent({ initialRoute }: { initialRoute?: Route }) {
   }
 
   if (user.role === "fab_user") {
-    return <FabRoot user={user} route={route} navigate={navigate} onLogout={onLogout} tweaksUI={tweaksUI} />
+    return <FabRoot user={user} route={route} navigate={navigate} onLogout={onLogout} tweaksUI={tweaksUI} unreadCount={unreadCount} />
   }
 
   if (user.role === "lab_manager") {
-    return <ManagerRoot user={user} route={route} navigate={navigate} onLogout={onLogout} tweaksUI={tweaksUI} />
+    return <ManagerRoot user={user} route={route} navigate={navigate} onLogout={onLogout} tweaksUI={tweaksUI} unreadCount={unreadCount} />
   }
 
-  return <LabRoot user={user} route={route} navigate={navigate} onLogout={onLogout} tweaksUI={tweaksUI} />
+  return <LabRoot user={user} route={route} navigate={navigate} onLogout={onLogout} tweaksUI={tweaksUI} unreadCount={unreadCount} />
 }
 
-function LabRoot({ user, route, navigate, onLogout, tweaksUI }: RootProps) {
+function useUnreadNotificationCount(enabled: boolean): number {
+  const [count, setCount] = useState(0)
+  useEffect(() => {
+    if (!enabled) {
+      setCount(0)
+      return
+    }
+    let cancelled = false
+    const refresh = async () => {
+      try {
+        const next = await (window as ReferenceWindow).api?.notifications.unreadCount()
+        if (!cancelled) setCount(Number(next || 0))
+      } catch {
+        if (!cancelled) setCount(0)
+      }
+    }
+    refresh()
+    const h = setInterval(refresh, 5000)
+    return () => {
+      cancelled = true
+      clearInterval(h)
+    }
+  }, [enabled])
+  return count
+}
+
+function LabRoot({ user, route, navigate, onLogout, tweaksUI, unreadCount }: RootProps) {
   const win = window as ReferenceWindow
   const { Sidebar, NAV_ITEMS } = win.SHELL!
   const LabApp = win.LabApp!
-  const navItems = NAV_ITEMS.map((item) => ({ ...item, id: `lab_${item.id}` }))
+  const navItems = [
+    ...NAV_ITEMS.map((item) => ({ ...item, id: `lab_${item.id}` })),
+    { id: "lab_notifications", label: "Notifications", cn: "通知", icon: "Bell" },
+  ]
   return (
     <div className="app" data-screen-label={`App · lab_mem · ${route.page}`}>
       <Sidebar
@@ -159,16 +189,17 @@ function LabRoot({ user, route, navigate, onLogout, tweaksUI }: RootProps) {
         sublabel="Lab Member"
         user={user}
         onLogout={onLogout}
+        counts={{ lab_notifications: unreadCount }}
       />
       <main className="main">
-        <LabApp route={route} navigate={navigate} />
+        {route.page === "lab_notifications" ? <NotificationsPage /> : <LabApp route={route} navigate={navigate} />}
       </main>
       {tweaksUI}
     </div>
   )
 }
 
-function FabRoot({ user, route, navigate, onLogout, tweaksUI }: RootProps) {
+function FabRoot({ user, route, navigate, onLogout, tweaksUI, unreadCount }: RootProps) {
   const win = window as ReferenceWindow
   const { Sidebar, FAB_NAV_ITEMS } = win.SHELL!
   const FabApp = win.FabApp!
@@ -180,20 +211,21 @@ function FabRoot({ user, route, navigate, onLogout, tweaksUI }: RootProps) {
       <Sidebar
         route={route}
         navigate={navFromSidebar}
-        navItems={FAB_NAV_ITEMS}
+        navItems={[...FAB_NAV_ITEMS, { id: "fab_notifications", label: "Notifications", cn: "通知", icon: "Bell" }]}
         sectionLabel="Requests"
         user={user}
         onLogout={onLogout}
+        counts={{ fab_notifications: unreadCount }}
       />
       <main className="main">
-        <FabApp route={route} navigate={navigate} />
+        {route.page === "fab_notifications" ? <NotificationsPage /> : <FabApp route={route} navigate={navigate} />}
       </main>
       {tweaksUI}
     </div>
   )
 }
 
-function ManagerRoot({ user, route, navigate, onLogout, tweaksUI }: RootProps) {
+function ManagerRoot({ user, route, navigate, onLogout, tweaksUI, unreadCount }: RootProps) {
   const win = window as ReferenceWindow
   const { Sidebar, NAV_ITEMS } = win.SHELL!
   const LabApp = win.LabApp!
@@ -223,6 +255,7 @@ function ManagerRoot({ user, route, navigate, onLogout, tweaksUI }: RootProps) {
         ]}
         user={user}
         onLogout={onLogout}
+        counts={{ mgr_notifications: unreadCount }}
       />
       <main className="main">
         {route.page === "mgr_accounts"
@@ -255,6 +288,7 @@ interface RootProps {
   navigate: (route: Route) => void
   onLogout: () => void
   tweaksUI: React.ReactNode
+  unreadCount?: number
 }
 
 function normalizeUiUser(user: User): User {

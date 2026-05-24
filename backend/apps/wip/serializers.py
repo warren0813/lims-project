@@ -56,6 +56,7 @@ def proposal_out(proposal: DispatchQueueProposal) -> dict[str, Any]:
                     "id": str(item.id),
                     "sample_id": str(sample.id),
                     "sample_no": sample.sample_no,
+                    "sample_status": sample.status,
                     "request_id": str(request.id),
                     "request_no": request.request_no,
                     "fab_user": request.requester.username,
@@ -75,6 +76,14 @@ def proposal_out(proposal: DispatchQueueProposal) -> dict[str, Any]:
                 "equipment_type_name": batch.equipment_type.name,
                 "equipment_id": str(batch.equipment_id) if batch.equipment_id else None,
                 "equipment_name": batch.equipment.name if batch.equipment else None,
+                "equipment_capacity": batch.equipment.capacity if batch.equipment else None,
+                "equipment_status": batch.equipment.status if batch.equipment else None,
+                "equipment_queue_name": (
+                    batch.equipment.worker_queue_name
+                    if batch.equipment and batch.equipment.worker_queue_name
+                    else batch.equipment_type.queue_name
+                ),
+                "recipe_max_batch_size": batch.recipe.max_batch_size,
                 "priority": batch.priority,
                 "order": batch.order,
                 "estimated_runtime_sec": batch.estimated_runtime_sec,

@@ -33,9 +33,14 @@ recipe_router = Router(tags=["Recipes"], auth=JWTAuth())
 
 
 def _equipment_qs():
-    return Equipment.objects.select_related("equipment_type", "current_dispatch").prefetch_related(
+    return Equipment.objects.select_related(
+        "equipment_type",
+        "current_dispatch__wip__recipe",
+        "current_dispatch__wip__experiment_type",
+    ).prefetch_related(
         "capability_links__recipe__experiment_type",
         "capability_links__recipe__equipment_type",
+        "current_dispatch__wip__items",
     )
 
 

@@ -63,15 +63,24 @@ def request_statistics(
 
 
 @router.get("/equipment-utilization", response={200: dict, 403: ErrorOut})
-def equipment_utilization(request: HttpRequest):
+def equipment_utilization(
+    request: HttpRequest,
+    start_date: date | None = Query(None),  # noqa: B008
+    end_date: date | None = Query(None),  # noqa: B008
+):
     denied = _manager(request)
     if denied:
         return denied
     rows = []
     for equipment in Equipment.objects.all():
-        total = DispatchJob.objects.filter(equipment=equipment).count()
-        running = DispatchJob.objects.filter(equipment=equipment, status=DispatchStatus.RUNNING).count()
-        completed = DispatchJob.objects.filter(equipment=equipment, status=DispatchStatus.COMPLETED).count()
+        qs = DispatchJob.objects.filter(equipment=equipment)
+        if start_date:
+            qs = qs.filter(created_at__date__gte=start_date)
+        if end_date:
+            qs = qs.filter(created_at__date__lte=end_date)
+        total = qs.count()
+        running = qs.filter(status=DispatchStatus.RUNNING).count()
+        completed = qs.filter(status=DispatchStatus.COMPLETED).count()
         rows.append(
             {
                 "equipment_id": str(equipment.id),

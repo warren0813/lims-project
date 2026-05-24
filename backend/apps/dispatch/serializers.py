@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from apps.dispatch.models import DispatchJob
+from apps.dispatch.simulator import generate_live_metrics
 
 
 def result_out(result) -> dict[str, Any] | None:
@@ -21,6 +22,13 @@ def result_out(result) -> dict[str, Any] | None:
 def dispatch_out(dispatch: DispatchJob) -> dict[str, Any]:
     equipment = dispatch.equipment
     result = getattr(dispatch, "result", None)
+    wafer_count = dispatch.wip.items.count()
+    metrics = generate_live_metrics(
+        dispatch.wip.recipe.recipe_code,
+        dispatch.wip.experiment_type.name,
+        dispatch.progress,
+        wafer_count,
+    )
     return {
         "id": str(dispatch.id),
         "dispatch_no": dispatch.dispatch_no,
@@ -36,6 +44,8 @@ def dispatch_out(dispatch: DispatchJob) -> dict[str, Any]:
         "status": dispatch.status,
         "progress": dispatch.progress,
         "current_step": dispatch.current_step,
+        "metrics": metrics,
+        "wafer_count": wafer_count,
         "worker_node": dispatch.worker_node,
         "queue_name": dispatch.queue_name,
         "queue_position": dispatch.queue_position,

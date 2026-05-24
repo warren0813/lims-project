@@ -51,6 +51,8 @@ class DispatchOut(Schema):
     status: str
     progress: float
     current_step: str
+    metrics: dict[str, Any]
+    wafer_count: int
     worker_node: str
     queue_name: str
     queue_position: int

@@ -231,7 +231,8 @@ def mark_wip_dispatched(actor, wip: WipBatch) -> None:
     CommissionRequest.objects.filter(wip_items__wip=wip).update(status=RequestStatus.QUEUED)
 
 
-def _candidate_equipment(recipe: Recipe) -> Equipment | None:
+def _candidate_equipment(recipe: Recipe, reserved_ids: set[str] | None = None) -> Equipment | None:
+    reserved_ids = reserved_ids or set()
     return (
         Equipment.objects.filter(
             equipment_type=recipe.equipment_type,
@@ -239,6 +240,7 @@ def _candidate_equipment(recipe: Recipe) -> Equipment | None:
             status=EquipmentStatus.IDLE,
             capability_links__recipe=recipe,
         )
+        .exclude(id__in=reserved_ids)
         .order_by("equipment_code")
         .first()
     )
@@ -282,6 +284,7 @@ def auto_propose_dispatch_queue(actor, max_batches: int | None = None) -> Dispat
     )
     order = 1
     total_runtime = 0
+    reserved_equipment_ids: set[str] = set()
     for key in sorted(grouped):
         recipe = recipe_by_key[key]
         ordered = sorted(
@@ -298,7 +301,9 @@ def auto_propose_dispatch_queue(actor, max_batches: int | None = None) -> Dispat
                 proposal.save(update_fields=["estimated_total_runtime_sec", "updated_at"])
                 return proposal
             chunk = ordered[start : start + recipe.max_batch_size]
-            equipment = _candidate_equipment(recipe)
+            equipment = _candidate_equipment(recipe, reserved_equipment_ids)
+            if equipment:
+                reserved_equipment_ids.add(str(equipment.id))
             batch_warnings = [] if equipment else ["No idle compatible equipment is currently available"]
             batch = DispatchQueueProposalBatch.objects.create(
                 proposal=proposal,
@@ -392,7 +397,8 @@ def confirm_proposal(actor, proposal: DispatchQueueProposal) -> list[WipBatch]:
         )
         lock_wip(actor, wip)
         created.append(wip)
-        dispatch_plan.append((str(wip.id), str(batch.equipment_id) if batch.equipment_id else None))
+        if batch.equipment_id:
+            dispatch_plan.append((str(wip.id), str(batch.equipment_id)))
     proposal.status = DispatchQueueProposalStatus.CONFIRMED
     proposal.confirmed_by = actor
     proposal.confirmed_at = timezone.now()
@@ -434,7 +440,7 @@ def confirm_proposal(actor, proposal: DispatchQueueProposal) -> list[WipBatch]:
         Role.LAB_USER,
         "wip.proposal.confirmed",
         f"Dispatch proposal {proposal.proposal_no} confirmed",
-        f"{len(created)} WIP batch(es) confirmed. Dispatch jobs will be queued automatically.",
+        f"{len(created)} WIP batch(es) confirmed. {len(dispatch_plan)} dispatch job(s) will be queued automatically; remaining WIP stays planned until equipment is available.",
         related_entity=proposal,
     )
     _audit(actor, "wip.proposal.confirm", proposal)

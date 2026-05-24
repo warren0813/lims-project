@@ -23,7 +23,7 @@ def dispatch_qs():
         "wip__recipe__equipment_type",
         "wip__experiment_type",
         "equipment",
-    ).prefetch_related("result")
+    ).prefetch_related("result", "wip__items")
 
 
 def _audit(actor, action: str, entity, message: str = ""):

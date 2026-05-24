@@ -81,8 +81,10 @@ const useDispatchCreationData = (experimentId) => {
       window.api.recipes.list(),
     ])
       .then(([eqs, recs]) => {
-        setEquipment(eqs.filter(e => (e.capabilities || []).some(c => c.id === experimentId)));
-        setRecipes(recs.filter(r => r.experimentId === experimentId));
+        const scopedRecipes = recs.filter(r => r.experimentId === experimentId);
+        const recipeIds = new Set(scopedRecipes.map(r => r.id));
+        setEquipment(eqs.filter(e => (e.capabilities || []).some(c => recipeIds.has(c.id))));
+        setRecipes(scopedRecipes);
         setError(null);
       })
       .catch(err => setError(err.message || String(err)))
@@ -98,6 +100,7 @@ const useDispatchCreationData = (experimentId) => {
 // modal does an N-fetch over received samples' parent requests).
 const useWipCreationData = () => {
   const [experimentTypes, setExperimentTypes] = lS([]);
+  const [recipes, setRecipes] = lS([]);
   const [samples, setSamples] = lS([]);
   const [equipment, setEquipment] = lS([]);
   const [requestExpMap, setRequestExpMap] = lS(new Map());
@@ -109,10 +112,11 @@ const useWipCreationData = () => {
     setLoading(true);
     Promise.all([
       window.api.experimentTypes.list(),
+      window.api.recipes.list(),
       window.api.samples.list(),
       window.api.equipment.list(),
     ])
-      .then(async ([exps, allSamples, equip]) => {
+      .then(async ([exps, recs, allSamples, equip]) => {
         // Coarse filter: at the lab (received or already processing for a
         // different experiment) + not currently locked to an active WIP.
         // Processing wafers still need to land in new WIPs when their parent
@@ -130,6 +134,7 @@ const useWipCreationData = () => {
         const map = new Map();
         reqDetails.forEach(r => { if (r) map.set(r.id, r.expIds || []); });
         setExperimentTypes(exps);
+        setRecipes(recs);
         setSamples(eligible);
         setEquipment(equip);
         setRequestExpMap(map);
@@ -139,7 +144,7 @@ const useWipCreationData = () => {
       .finally(() => setLoading(false));
   }, []);
 
-  return { experimentTypes, samples, equipment, requestExpMap, loading, error };
+  return { experimentTypes, recipes, samples, equipment, requestExpMap, loading, error };
 };
 
 // Live experiment-types catalogue. Both the equipment modal and the
@@ -169,13 +174,17 @@ const useLabEquipment = () => {
   const [error, setError] = lS(null);
   const refresh = React.useCallback(() => {
     if (!window.api || !window.api.equipment) { setLoading(false); return; }
-    setLoading(true);
+    if (equipment.length === 0) setLoading(true);
     window.api.equipment.list()
       .then(es => { setEquipment(es); setError(null); })
       .catch(err => setError(err.message || String(err)))
       .finally(() => setLoading(false));
-  }, []);
+  }, [equipment.length]);
   React.useEffect(() => { refresh(); }, [refresh]);
+  React.useEffect(() => {
+    const h = setInterval(refresh, 2000);
+    return () => clearInterval(h);
+  }, [refresh]);
   return { equipment, loading, error, refresh };
 };
 
@@ -241,6 +250,11 @@ const useLabDispatchDetail = (id) => {
     const cleanup = refresh();
     return cleanup;
   }, [refresh]);
+  React.useEffect(() => {
+    if (!d || !['ready_for_dispatch', 'dispatched', 'pending', 'running'].includes(d.status)) return;
+    const h = setInterval(refresh, 2000);
+    return () => clearInterval(h);
+  }, [d?.status, refresh]);
   // Attach recipe params (if known) so the consumer doesn't have to look up.
   const dispatch = d ? { ...d, recipeParams: recipeById.get(d.recipeId)?.params || null } : null;
   return { dispatch, waferResults, loading, error, refresh };
@@ -257,7 +271,7 @@ const useLabDispatches = () => {
   const [error, setError] = lS(null);
   const refresh = React.useCallback(() => {
     if (!window.api) { setLoading(false); return; }
-    setLoading(true);
+    if (dispatches.length === 0) setLoading(true);
     Promise.all([
       window.api.dispatches.list(),
       window.api.experimentTypes.list().catch(() => []),
@@ -271,8 +285,14 @@ const useLabDispatches = () => {
       })
       .catch(err => setError(err.message || String(err)))
       .finally(() => setLoading(false));
-  }, []);
+  }, [dispatches.length]);
   React.useEffect(() => { refresh(); }, [refresh]);
+  React.useEffect(() => {
+    const hasOpen = dispatches.some(d => ['ready_for_dispatch', 'dispatched', 'pending', 'running'].includes(d.status));
+    if (!hasOpen) return;
+    const h = setInterval(refresh, 2000);
+    return () => clearInterval(h);
+  }, [dispatches, refresh]);
   // Join name fields onto each dispatch row.
   const enriched = dispatches.map(d => ({
     ...d,
@@ -327,9 +347,12 @@ const useLabWipProposals = () => {
   const refresh = React.useCallback(() => {
     if (!window.api || !window.api.wips) { setLoading(false); return; }
     setLoading(true);
-    window.api.wips.proposals()
+      window.api.wips.proposals()
       .then(rows => {
-        setProposals(rows.filter(p => p.status === 'draft'));
+        setProposals(rows.filter(p =>
+          p.status === 'draft'
+          && (p.batches || []).some(b => (b.items || []).some(item => !item.sampleStatus || item.sampleStatus === 'received'))
+        ));
         setError(null);
       })
       .catch(err => setError(err.message || String(err)))
@@ -535,7 +558,10 @@ const PILL = {
   result_recorded: { label: 'Result Recorded', bg: '#e7f0e9', fg: '#2e6a47' },
   // equipment
   idle:        { label: 'Idle',        bg: '#e7f0e9', fg: '#2e6a47' },
+  working:     { label: 'Working',     bg: '#ecebf3', fg: '#4f4a8f' },
   maintenance: { label: 'Maintenance', bg: '#fbe4e6', fg: '#a93445' },
+  faulty:      { label: 'Faulty',      bg: '#fde9d8', fg: '#9a4715' },
+  offline:     { label: 'Offline',     bg: '#ecedf0', fg: '#5a5a6e' },
   // verdict
   pass:        { label: 'Pass',        bg: '#e7f0e9', fg: '#2e6a47' },
   fail:        { label: 'Fail',        bg: '#fbe4e6', fg: '#a93445' },
@@ -628,6 +654,66 @@ const Pill = ({ kind, dotted }) => {
   );
 };
 
+const clampPct = (value) => Math.max(0, Math.min(100, Number(value || 0)));
+
+const ProgressBar = ({ value, height = 8, color = accent, track = '#ececf2' }) => {
+  const pct = clampPct(value);
+  return (
+    <div style={{ position: 'relative', height, background: track, borderRadius: 999, overflow: 'hidden' }}>
+      <div style={{
+        position: 'absolute', inset: 0, width: `${pct}%`,
+        background: color, borderRadius: 999, transition: 'width 0.25s ease',
+      }}/>
+    </div>
+  );
+};
+
+const metricLabel = (key) => String(key)
+  .replace(/_/g, ' ')
+  .replace(/\b\w/g, c => c.toUpperCase());
+
+const metricValue = (key, value) => {
+  if (value == null || value === '') return '—';
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (typeof value !== 'number') return String(value);
+  const v = Math.abs(value) >= 100 ? Math.round(value) : Number(value.toFixed(2));
+  if (key.endsWith('_c')) return `${v} C`;
+  if (key.endsWith('_kv')) return `${v} kV`;
+  if (key.endsWith('_pa')) return `${v} Pa`;
+  if (key.endsWith('_w')) return `${v} W`;
+  if (key.endsWith('_sccm')) return `${v} sccm`;
+  if (key.endsWith('_slm')) return `${v} slm`;
+  if (key.endsWith('_fps')) return `${v} fps`;
+  if (key.endsWith('_ohm')) return `${v} ohm`;
+  if (key.endsWith('_percent')) return `${v}%`;
+  return String(v);
+};
+
+const MetricsGrid = ({ metrics = {}, limit = 4 }) => {
+  const entries = Object.entries(metrics || {}).filter(([key]) => key !== 'progress_percent').slice(0, limit);
+  if (entries.length === 0) return null;
+  return (
+    <div style={{
+      display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))',
+      gap: 8,
+    }}>
+      {entries.map(([key, value]) => (
+        <div key={key} style={{
+          padding: '8px 10px', borderRadius: 8,
+          background: '#fbfbfd', border: `1px solid ${lineSoft}`,
+        }}>
+          <div style={{ fontSize: 10.5, color: muted, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+            {metricLabel(key)}
+          </div>
+          <div style={{ marginTop: 3, fontFamily: 'var(--font-mono)', fontSize: 12.5, color: ink, fontWeight: 700 }}>
+            {metricValue(key, value)}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+};
+
 const inputStyle = {
   width: '100%', padding: '10px 12px', borderRadius: 8,
   border: `1px solid ${line}`, background: '#fff',
@@ -636,8 +722,8 @@ const inputStyle = {
 };
 
 const TextInput = (p) => <input {...p} style={{ ...inputStyle, ...p.style }}/>;
-const SelectInput = ({ value, onChange, children, style }) => (
-  <select value={value} onChange={onChange} style={{ ...inputStyle, cursor: 'pointer', ...style }}>{children}</select>
+const SelectInput = ({ value, onChange, children, style, ...rest }) => (
+  <select value={value} onChange={onChange} style={{ ...inputStyle, cursor: rest.disabled ? 'not-allowed' : 'pointer', ...style }} {...rest}>{children}</select>
 );
 const TextArea = (p) => <textarea {...p} style={{ ...inputStyle, minHeight: 80, resize: 'vertical', fontFamily: 'inherit', ...p.style }}/>;
 
@@ -1580,6 +1666,69 @@ const LabWaferDetail = ({ id, navigate, showToast }) => {
   );
 };
 
+const WipProposalBatchCard = ({ batch, planned = false }) => (
+  <div style={{
+    border: `1px solid ${planned ? '#f0d7a8' : line}`, borderRadius: 8, overflow: 'hidden',
+    background: planned ? '#fffdf8' : '#fff',
+  }}>
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: '44px minmax(0,1.2fr) minmax(0,1.2fr) 180px 110px',
+      gap: 12, alignItems: 'center',
+      padding: '11px 14px', background: planned ? '#fff8ec' : bgSoft,
+      borderBottom: `1px solid ${lineSoft}`,
+    }}>
+      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: muted }}>#{batch.order}</span>
+      <span style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{batch.experimentTypeName}</div>
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: muted }}>{batch.recipeName}</div>
+      </span>
+      <span style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 12, color: text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {planned ? 'Waiting for idle equipment' : (batch.equipmentName || 'Auto-pick idle equipment')}
+        </div>
+        <div style={{ fontSize: 11.5, color: muted }}>
+          {batch.equipmentTypeName}{batch.equipmentQueueName ? ` · ${batch.equipmentQueueName}` : ''}
+        </div>
+      </span>
+      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: text2 }}>
+        {batch.items.length}/{batch.equipmentCapacity || batch.recipeMaxBatchSize || '—'} wafer capacity
+        <span style={{ display: 'block', marginTop: 4 }}>
+          <ProgressBar
+            value={Math.min(100, Math.round((batch.items.length / Math.max(1, batch.equipmentCapacity || batch.recipeMaxBatchSize || batch.items.length || 1)) * 100))}
+            height={5}
+            color={planned ? '#b8720e' : accent}
+          />
+        </span>
+      </span>
+      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: text2 }}>
+        {window.UI.formatDuration(batch.estimatedRuntimeSec)}
+        <span style={{ display: 'block', marginTop: 4, color: planned ? '#b8720e' : muted }}>
+          {planned ? 'planned' : (batch.equipmentStatus || 'ready')}
+        </span>
+      </span>
+    </div>
+    {batch.warnings.length > 0 && (
+      <div style={{ padding: '8px 14px', background: '#fff8ec', color: '#9a5a12', fontSize: 12, borderBottom: `1px solid ${lineSoft}` }}>
+        {batch.warnings.join(' · ')}
+      </div>
+    )}
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 8, padding: 12 }}>
+      {batch.items.map(item => (
+        <div key={item.id} style={{
+          padding: '9px 10px', borderRadius: 8,
+          border: `1px solid ${lineSoft}`, background: '#fbfbfd',
+        }}>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, fontWeight: 700, color: ink }}>{item.sampleNo}</div>
+          <div style={{ fontSize: 11.5, color: muted, marginTop: 2 }}>
+            {item.requestNo} · {item.fabUser} · {item.priority}
+          </div>
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
 const WipProposalQueue = ({ proposals, loading, confirmingId, onConfirm }) => {
   if (loading && proposals.length === 0) return null;
   if (!proposals.length) return null;
@@ -1614,65 +1763,48 @@ const WipProposalQueue = ({ proposals, loading, confirmingId, onConfirm }) => {
                 disabled={confirmingId === proposal.id || proposal.batches.length === 0}
                 onClick={() => onConfirm(proposal)}
               >
-                {confirmingId === proposal.id ? 'Confirming…' : 'Confirm Queue'}
+                {confirmingId === proposal.id ? 'Confirming…' : 'Confirm & Dispatch'}
               </PrimaryBtn>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {proposal.batches.length === 0 ? (
+            {(() => {
+              const current = proposal.batches.filter(batch => batch.equipmentId);
+              const planned = proposal.batches.filter(batch => !batch.equipmentId);
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  {proposal.batches.length === 0 ? (
                 <div style={{
                   padding: '14px 16px', borderRadius: 8, background: bgSoft,
                   border: `1px dashed ${line}`, color: muted, fontSize: 13, textAlign: 'center',
                 }}>
                   No received wafers matched an active recipe and capable equipment.
                 </div>
-              ) : proposal.batches.map(batch => (
-                <div key={batch.id} style={{
-                  border: `1px solid ${line}`, borderRadius: 8, overflow: 'hidden', background: '#fff',
-                }}>
-                  <div style={{
-                    display: 'grid',
-                    gridTemplateColumns: '44px minmax(0,1.2fr) minmax(0,1.2fr) 140px 110px',
-                    gap: 12, alignItems: 'center',
-                    padding: '11px 14px', background: bgSoft,
-                    borderBottom: `1px solid ${lineSoft}`,
-                  }}>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: muted }}>#{batch.order}</span>
-                    <span style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{batch.experimentTypeName}</div>
-                      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: muted }}>{batch.recipeName}</div>
-                    </span>
-                    <span style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 12, color: text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{batch.equipmentName || 'Auto-pick idle equipment'}</div>
-                      <div style={{ fontSize: 11.5, color: muted }}>{batch.equipmentTypeName}</div>
-                    </span>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: text2 }}>
-                      {batch.items.length} wafer{batch.items.length === 1 ? '' : 's'}
-                    </span>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: text2 }}>
-                      {window.UI.formatDuration(batch.estimatedRuntimeSec)}
-                    </span>
-                  </div>
-                  {batch.warnings.length > 0 && (
-                    <div style={{ padding: '8px 14px', background: '#fff8ec', color: '#9a5a12', fontSize: 12, borderBottom: `1px solid ${lineSoft}` }}>
-                      {batch.warnings.join(' · ')}
-                    </div>
-                  )}
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 8, padding: 12 }}>
-                    {batch.items.map(item => (
-                      <div key={item.id} style={{
-                        padding: '9px 10px', borderRadius: 8,
-                        border: `1px solid ${lineSoft}`, background: '#fbfbfd',
-                      }}>
-                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, fontWeight: 700, color: ink }}>{item.sampleNo}</div>
-                        <div style={{ fontSize: 11.5, color: muted, marginTop: 2 }}>
-                          {item.requestNo} · {item.fabUser} · {item.priority}
+                  ) : (
+                    <>
+                      <div>
+                        <div style={{ fontSize: 11, fontWeight: 800, color: text2, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
+                          Current Dispatch Plan · {current.length} batch{current.length === 1 ? '' : 'es'}
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                          {current.length
+                            ? current.map(batch => <WipProposalBatchCard key={batch.id} batch={batch}/>)
+                            : <div style={{ padding: '12px 14px', borderRadius: 8, background: bgSoft, color: muted, fontSize: 12.5 }}>No idle compatible equipment is available for immediate dispatch.</div>}
                         </div>
                       </div>
-                    ))}
-                  </div>
+                      {planned.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: 11, fontWeight: 800, color: '#9a5a12', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
+                            Planned Dispatch Queue · {planned.length} batch{planned.length === 1 ? '' : 'es'}
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                            {planned.map(batch => <WipProposalBatchCard key={batch.id} batch={batch} planned/>)}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
-              ))}
-            </div>
+              );
+            })()}
           </div>
         ))}
       </div>
@@ -1684,6 +1816,7 @@ const WipProposalQueue = ({ proposals, loading, confirmingId, onConfirm }) => {
 const LabWipList = ({ navigate, showToast }) => {
   const { wips, loading, error, refresh } = useLabWips();
   const { proposals, loading: proposalsLoading, error: proposalsError, refresh: refreshProposals } = useLabWipProposals();
+  const { wafers: autoWipWafers, refresh: refreshAutoWipWafers } = useLabSamples();
   const [tab, setTab] = lS('active');
   const [modalOpen, setModalOpen] = lS(false);
   const [autoBusy, setAutoBusy] = lS(false);
@@ -1698,6 +1831,7 @@ const LabWipList = ({ navigate, showToast }) => {
     : tab === 'completed'
       ? wips.filter(w => !isWipActive(w))
       : wips;
+  const hasAutoWipCandidates = autoWipWafers.some(w => w.raw_status === 'received' && !w.hasWip);
 
   const openModal = () => setModalOpen(true);
   const closeModal = () => setModalOpen(false);
@@ -1713,11 +1847,15 @@ const LabWipList = ({ navigate, showToast }) => {
       showToast && showToast('Confirm the current WIP queue first');
       return;
     }
+    if (!hasAutoWipCandidates) {
+      showToast && showToast('No received wafers are ready for WIP');
+      return;
+    }
     setAutoBusy(true);
     setQueueError(null);
     try {
       const proposal = await window.api.wips.autoPropose();
-      await refreshProposals();
+      await Promise.all([refreshProposals(), refreshAutoWipWafers()]);
       if (proposal.batches.length === 0) {
         showToast && showToast('No received wafers are ready for WIP');
       } else {
@@ -1737,7 +1875,7 @@ const LabWipList = ({ navigate, showToast }) => {
     try {
       const created = await window.api.wips.confirmProposal(proposal.id);
       showToast && showToast(`${created.length} WIP batch${created.length === 1 ? '' : 'es'} queued for dispatch`);
-      await Promise.all([refresh(), refreshProposals()]);
+      await Promise.all([refresh(), refreshProposals(), refreshAutoWipWafers()]);
     } catch (e) {
       setQueueError(e.message || String(e));
     } finally {
@@ -1760,7 +1898,7 @@ const LabWipList = ({ navigate, showToast }) => {
       title="WIP"
       subtitle="Work-in-progress units — each WIP runs one experiment on one piece of equipment"
       right={<div style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
-        <SecondaryBtn icon={<LF.Activity size={14}/>} onClick={onAutoArrange} disabled={autoBusy}>
+        <SecondaryBtn icon={<LF.Activity size={14}/>} onClick={onAutoArrange} disabled={autoBusy || !hasAutoWipCandidates}>
           {autoBusy ? 'Arranging…' : 'Auto Arrange WIP'}
         </SecondaryBtn>
         <PrimaryBtn icon={<LF.Plus size={14}/>} onClick={openModal}>New WIP</PrimaryBtn>
@@ -1881,8 +2019,9 @@ const WipCreationModal = ({ open, onClose, onSaved }) => {
   return <WipCreationModalInner onClose={onClose} onSaved={onSaved}/>;
 };
 const WipCreationModalInner = ({ onClose, onSaved }) => {
-  const { experimentTypes, samples, equipment, requestExpMap, loading, error: loadError } = useWipCreationData();
+  const { experimentTypes, recipes, samples, equipment, requestExpMap, loading, error: loadError } = useWipCreationData();
   const [experimentTypeId, setExperimentTypeId] = lS('');
+  const [recipeId, setRecipeId] = lS('');
   const [selectedSampleIds, setSelectedSampleIds] = lS([]);
   const [note, setNote] = lS('');
   const [busy, setBusy] = lS(false);
@@ -1893,13 +2032,22 @@ const WipCreationModalInner = ({ onClose, onSaved }) => {
     ? samples.filter(s => (requestExpMap.get(s.requestId) || []).includes(experimentTypeId))
     : [];
 
-  // Selection cap = max(capacity) across capable equipment (every status,
-  // not just idle — per the user spec, maintenance/disabled still counts
-  // toward planning).
+  const availableRecipes = experimentTypeId
+    ? recipes.filter(r => r.experimentId === experimentTypeId)
+    : [];
+  const selectedRecipe = availableRecipes.find(r => r.id === recipeId) || null;
+
+  // Selection cap = the smaller of recipe max batch size and the biggest
+  // equipment capacity for that exact recipe. This matches backend
+  // dispatch rules, where equipment capability is recipe-based.
   const capableEquipment = equipment.filter(e =>
-    (e.capabilities || []).some(c => c.id === experimentTypeId)
+    recipeId && (e.capabilities || []).some(c => c.id === recipeId)
   );
-  const maxBatch = capableEquipment.reduce((m, e) => Math.max(m, e.capacity || 0), 0);
+  const equipmentCap = capableEquipment.reduce((m, e) => Math.max(m, e.capacity || 0), 0);
+  const recipeCap = selectedRecipe?.maxBatchSize || 0;
+  const maxBatch = selectedRecipe && equipmentCap
+    ? Math.max(1, Math.min(recipeCap || equipmentCap, equipmentCap))
+    : 0;
   const biggest = capableEquipment.reduce(
     (best, e) => (e.capacity || 0) > (best?.capacity || 0) ? e : best,
     null,
@@ -1913,6 +2061,11 @@ const WipCreationModalInner = ({ onClose, onSaved }) => {
   // eslint-disable-next-line — depend on experiment_type only
   }, [experimentTypeId]);
 
+  React.useEffect(() => {
+    setRecipeId(availableRecipes[0]?.id || '');
+  // eslint-disable-next-line — reset recipe when experiment changes
+  }, [experimentTypeId, recipes.length]);
+
   const toggleSample = (id) => {
     setSelectedSampleIds(prev => {
       if (prev.includes(id)) return prev.filter(x => x !== id);
@@ -1921,13 +2074,18 @@ const WipCreationModalInner = ({ onClose, onSaved }) => {
     });
   };
 
-  const valid = !!experimentTypeId && selectedSampleIds.length > 0 && !loading;
+  const selectBatch = () => {
+    if (!maxBatch) return;
+    setSelectedSampleIds(eligibleSamples.slice(0, maxBatch).map(s => s.id));
+  };
+
+  const valid = !!recipeId && selectedSampleIds.length > 0 && !loading;
   const submit = async () => {
     setBusy(true); setSubmitErr(null);
     try {
       const created = await window.api.wips.create({
-        experimentTypeId,
-        sampleIds: selectedSampleIds,
+        recipe_id: recipeId,
+        sample_ids: selectedSampleIds,
         note: note.trim(),
       });
       onSaved && onSaved(created);
@@ -1942,7 +2100,7 @@ const WipCreationModalInner = ({ onClose, onSaved }) => {
     <Modal
       open={true}
       onClose={onClose}
-      title="New WIP"
+      title="Create WIP Batch"
       width={680}
       footer={<>
         <SecondaryBtn onClick={onClose} disabled={busy}>Cancel</SecondaryBtn>
@@ -1966,7 +2124,7 @@ const WipCreationModalInner = ({ onClose, onSaved }) => {
           <FieldLabel required>Experiment Type</FieldLabel>
           <SelectInput
             value={experimentTypeId === '' ? '' : String(experimentTypeId)}
-            onChange={(e) => setExperimentTypeId(e.target.value ? Number(e.target.value) : '')}
+            onChange={(e) => setExperimentTypeId(e.target.value)}
           >
             <option value="">— pick an experiment type —</option>
             {experimentTypes.map(t => (
@@ -1977,20 +2135,45 @@ const WipCreationModalInner = ({ onClose, onSaved }) => {
           </SelectInput>
         </div>
         <div>
+          <FieldLabel required>Recipe</FieldLabel>
+          <SelectInput
+            value={recipeId}
+            onChange={(e) => setRecipeId(e.target.value)}
+            disabled={!experimentTypeId || availableRecipes.length === 0}
+          >
+            <option value="">— pick a recipe —</option>
+            {availableRecipes.map(r => (
+              <option key={r.id} value={r.id}>
+                {r.name}{r.maxBatchSize ? ` · max ${r.maxBatchSize}` : ''}
+              </option>
+            ))}
+          </SelectInput>
+          {experimentTypeId && availableRecipes.length === 0 && (
+            <div style={{ marginTop: 6, fontSize: 12, color: '#a93445' }}>
+              No active recipe exists for this experiment.
+            </div>
+          )}
+        </div>
+        <div>
           <FieldLabel required>Wafers</FieldLabel>
-          {!experimentTypeId ? (
+          {!experimentTypeId || !recipeId ? (
             <div style={{
               padding: '14px 16px', borderRadius: 8,
               border: `1px dashed ${line}`, background: bgSoft,
               color: muted, fontSize: 13, textAlign: 'center',
-            }}>Pick an experiment type to see eligible wafers.</div>
+            }}>Pick an experiment type and recipe to see eligible wafers.</div>
           ) : (
             <>
-              <div style={{ fontSize: 12.5, color: text2, marginBottom: 8 }}>
-                {biggest
-                  ? <>Max <strong style={{ color: ink, fontFamily: 'var(--font-mono)' }}>{maxBatch}</strong> wafers — largest capable equipment is <strong style={{ color: ink, fontFamily: 'var(--font-mono)' }}>{biggest.name}</strong> (capacity {maxBatch}).</>
-                  : <span style={{ color: '#a93445' }}>No equipment can run this experiment yet.</span>
-                }
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', marginBottom: 8 }}>
+                <div style={{ fontSize: 12.5, color: text2 }}>
+                  {biggest
+                    ? <>Max <strong style={{ color: ink, fontFamily: 'var(--font-mono)' }}>{maxBatch}</strong> wafers · <strong style={{ color: ink, fontFamily: 'var(--font-mono)' }}>{biggest.name}</strong> capacity {biggest.capacity}</>
+                    : <span style={{ color: '#a93445' }}>No equipment can run this recipe yet.</span>
+                  }
+                </div>
+                <SecondaryBtn onClick={selectBatch} disabled={!maxBatch || eligibleSamples.length === 0} style={{ padding: '6px 10px', fontSize: 12 }}>
+                  Select Batch
+                </SecondaryBtn>
               </div>
               <div style={{
                 border: `1px solid ${line}`, borderRadius: 8,
@@ -2318,7 +2501,7 @@ const AddDispatchModalInner = ({ onClose, wip, onCreated }) => {
           <FieldLabel required>Equipment</FieldLabel>
           <SelectInput
             value={equipmentId === '' ? '' : String(equipmentId)}
-            onChange={(e) => setEquipmentId(e.target.value ? Number(e.target.value) : '')}
+            onChange={(e) => setEquipmentId(e.target.value)}
           >
             <option value="">— pick equipment —</option>
             {equipment.map(e => (
@@ -2343,7 +2526,7 @@ const AddDispatchModalInner = ({ onClose, wip, onCreated }) => {
           <FieldLabel required>Recipe</FieldLabel>
           <SelectInput
             value={recipeId === '' ? '' : String(recipeId)}
-            onChange={(e) => setRecipeId(e.target.value ? Number(e.target.value) : '')}
+            onChange={(e) => setRecipeId(e.target.value)}
           >
             <option value="">— pick a recipe —</option>
             {recipes.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
@@ -2505,20 +2688,8 @@ const LabDispatchList = ({ navigate, defaultTab = 'active' }) => {
             <div style={{ fontSize: 14, fontWeight: 600, color: text2 }}>No dispatches</div>
           </Card>
         ) : filtered.map(d => {
-          // Live countdown formula — reads the dispatch's own
-          // estimated_duration_seconds (set at create-time via the
-          // Add Dispatch modal). Without an estimate we don't draw
-          // the bar — see formatDuration's "—" rendering below.
-          let pct = 0, remainLabel = null, showBar = false;
-          const totalSec = d.estimatedDurationSeconds || 0;
-          if (d.status === 'running' && d.dispatchedAtIso && totalSec > 0) {
-            const startMs = new Date(d.dispatchedAtIso).getTime();
-            const elapsedSec = Math.max(0, (Date.now() - startMs) / 1000);
-            pct = Math.min(100, (elapsedSec / totalSec) * 100);
-            const remainSec = Math.max(0, totalSec - elapsedSec);
-            remainLabel = `${window.UI.formatDuration(Math.ceil(remainSec))} left`;
-            showBar = true;
-          }
+          const pct = clampPct(d.progress);
+          const live = ['dispatched', 'pending', 'running'].includes(d.status);
           // Experiment chip uses initials when the local string-slug catalogue
           // can't match the integer id (same pattern as Lab WIP list).
           const expCode = (findExp(d.experimentId)?.code) || (d.experimentName ? d.experimentName.split(/\s+/).map(t => t[0]).join('').slice(0, 4).toUpperCase() : '—');
@@ -2559,7 +2730,7 @@ const LabDispatchList = ({ navigate, defaultTab = 'active' }) => {
                 <span><Pill kind={d.status} dotted={d.status === 'running'}/></span>
                 <LF.ChevronRight size={15} color="#cbcbd6"/>
               </div>
-              {d.status === 'running' && d.dispatchedAt && (
+              {live && (
                 <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${lineSoft}` }}>
                   <div style={{
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -2568,21 +2739,18 @@ const LabDispatchList = ({ navigate, defaultTab = 'active' }) => {
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                       <span style={{
                         width: 6, height: 6, borderRadius: 999, background: '#f4a8bf',
-                        animation: 'pulse 1.4s ease-in-out infinite',
+                        animation: d.status === 'running' ? 'pulse 1.4s ease-in-out infinite' : 'none',
                       }}/>
-                      Running · dispatched <span style={{ fontFamily: 'var(--font-mono)', color: ink }}>{d.dispatchedAt.split(' ')[1]}</span>
+                      {d.currentStep || PILL[d.status]?.label || d.status}
                       <span style={{ color: muted }}>·</span>
-                      <span style={{ color: muted }}>est. {window.UI.formatDuration(d.estimatedDurationSeconds)}</span>
+                      <span style={{ color: muted }}>{d.waferCount || 0} wafer{(d.waferCount || 0) === 1 ? '' : 's'}</span>
                     </span>
-                    <span style={{ fontFamily: 'var(--font-mono)', color: accent }}>{remainLabel || '—'}</span>
+                    <span style={{ fontFamily: 'var(--font-mono)', color: accent }}>{Math.round(pct)}%</span>
                   </div>
-                  {showBar && (
-                    <div style={{ position: 'relative', height: 6, background: '#f1eef9', borderRadius: 999, overflow: 'hidden' }}>
-                      <div style={{
-                        position: 'absolute', inset: 0, width: `${pct}%`,
-                        background: 'linear-gradient(90deg, #f4a8bf, #6c67b8)',
-                        borderRadius: 999,
-                      }}/>
+                  <ProgressBar value={pct} height={7} color="linear-gradient(90deg, #f4a8bf, #6c67b8)" track="#f1eef9"/>
+                  {d.metrics && Object.keys(d.metrics).length > 0 && (
+                    <div style={{ marginTop: 10 }}>
+                      <MetricsGrid metrics={d.metrics} limit={4}/>
                     </div>
                   )}
                 </div>
@@ -2849,6 +3017,44 @@ const LabDispatchDetail = ({ id, navigate, showToast }) => {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 360px', gap: 18, alignItems: 'flex-start' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          <Card padding={0}>
+            <CardHeader>
+              <span>Live Equipment Telemetry</span>
+              <span style={{ marginLeft: 'auto', fontFamily: 'var(--font-mono)', fontSize: 11, color: muted }}>
+                {Math.round(clampPct(d.progress))}%
+              </span>
+            </CardHeader>
+            <div style={{ padding: 22, display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <ProgressBar value={d.progress} height={9} color="linear-gradient(90deg, #f4a8bf, #6c67b8)" track="#f1eef9"/>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0,1fr))', gap: 10 }}>
+                {[
+                  ['Step', d.currentStep || PILL[d.status]?.label || d.status],
+                  ['Wafers', d.waferCount || 0],
+                  ['Queue', d.queueName || '—'],
+                  ['Worker', d.workerNode || '—'],
+                ].map(([label, value]) => (
+                  <div key={label} style={{
+                    padding: '9px 10px', borderRadius: 8,
+                    background: '#fbfbfd', border: `1px solid ${lineSoft}`,
+                    minWidth: 0,
+                  }}>
+                    <div style={{ fontSize: 10.5, color: muted, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase' }}>{label}</div>
+                    <div style={{
+                      marginTop: 3, fontFamily: 'var(--font-mono)', fontSize: 12.5,
+                      color: ink, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    }}>{value}</div>
+                  </div>
+                ))}
+              </div>
+              <MetricsGrid metrics={d.metrics} limit={8}/>
+              {d.errorMessage && (
+                <div style={{ padding: '10px 12px', borderRadius: 8, background: '#fde4e4', color: '#a93445', fontSize: 12.5, fontWeight: 600 }}>
+                  {d.errorMessage}
+                </div>
+              )}
+            </div>
+          </Card>
+
           <Card padding={0}>
             <CardHeader>Dispatch Info</CardHeader>
             <div style={{ padding: 22, display: 'grid', gridTemplateColumns: '140px 1fr', rowGap: 12 }}>
@@ -3170,14 +3376,20 @@ const LabEquipment = ({ navigate, canManage = false, showToast }) => {
 
   const counts = {
     all: equipment.length,
+    working: equipment.filter(e => e.status === 'working').length,
     idle: equipment.filter(e => e.status === 'idle').length,
     maintenance: equipment.filter(e => e.status === 'maintenance').length,
+    faulty: equipment.filter(e => e.status === 'faulty').length,
+    offline: equipment.filter(e => e.status === 'offline').length,
   };
   const filtered = tab === 'all' ? equipment : equipment.filter(e => e.status === tab);
   const tabs = [
     { id: 'all',         label: 'All' },
+    { id: 'working',     label: 'Working' },
     { id: 'idle',        label: 'Idle' },
     { id: 'maintenance', label: 'Maintenance' },
+    { id: 'faulty',      label: 'Faulty' },
+    { id: 'offline',     label: 'Offline' },
   ];
 
   if (loading && equipment.length === 0) {
@@ -3236,6 +3448,8 @@ const LabEquipment = ({ navigate, canManage = false, showToast }) => {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 14 }}>
           {filtered.map(e => {
             const paramEntries = e.parameters ? Object.entries(e.parameters) : [];
+            const pct = clampPct(e.progress);
+            const loadPct = e.capacity ? clampPct(((e.waferCount || 0) / e.capacity) * 100) : 0;
             return (
               <Card key={e.id} padding={0}>
                 <div style={{
@@ -3258,12 +3472,63 @@ const LabEquipment = ({ navigate, canManage = false, showToast }) => {
                 </div>
                 <div style={{ padding: 20 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 12, color: text2 }}>
-                    <span>Wafer capacity</span>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: ink }}>{e.capacity}</span>
+                    <span>{e.currentStep || (e.status === 'working' ? 'Running' : 'Wafer capacity')}</span>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: ink }}>{Math.round(pct)}%</span>
                   </div>
-                  <div style={{ height: 6, borderRadius: 999, background: '#ececf2', overflow: 'hidden' }}>
-                    <div style={{ width: '0%', height: '100%', background: accent, borderRadius: 999 }}/>
+                  <ProgressBar value={pct} height={7} color="linear-gradient(90deg, #f4a8bf, #6c67b8)" track="#f1eef9"/>
+
+                  <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
+                    <div style={{ padding: '8px 10px', borderRadius: 8, background: '#fbfbfd', border: `1px solid ${lineSoft}` }}>
+                      <div style={{ fontSize: 10.5, color: muted, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase' }}>Wafers</div>
+                      <div style={{ marginTop: 3, fontFamily: 'var(--font-mono)', fontSize: 12.5, fontWeight: 700, color: ink }}>
+                        {e.waferCount || 0}/{e.capacity}
+                      </div>
+                    </div>
+                    <div style={{ padding: '8px 10px', borderRadius: 8, background: '#fbfbfd', border: `1px solid ${lineSoft}` }}>
+                      <div style={{ fontSize: 10.5, color: muted, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase' }}>Load</div>
+                      <div style={{ marginTop: 3, fontFamily: 'var(--font-mono)', fontSize: 12.5, fontWeight: 700, color: ink }}>
+                        {Math.round(loadPct)}%
+                      </div>
+                    </div>
+                    <div style={{ padding: '8px 10px', borderRadius: 8, background: '#fbfbfd', border: `1px solid ${lineSoft}` }}>
+                      <div style={{ fontSize: 10.5, color: muted, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase' }}>Worker</div>
+                      <div style={{
+                        marginTop: 3, fontFamily: 'var(--font-mono)', fontSize: 12.5, fontWeight: 700,
+                        color: ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      }}>
+                        {e.workerNode || '—'}
+                      </div>
+                    </div>
                   </div>
+
+                  {e.currentDispatchId && (
+                    <button
+                      type="button"
+                      onClick={() => navigate({ page: 'lab_dispatch_detail', id: e.currentDispatchId })}
+                      style={{
+                        marginTop: 12, width: '100%', padding: '9px 10px',
+                        borderRadius: 8, border: `1px solid ${line}`, background: '#fff',
+                        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                        cursor: 'pointer', fontFamily: 'inherit', color: accent, fontSize: 12.5, fontWeight: 700,
+                      }}
+                    >
+                      <span>Current Dispatch</span>
+                      <span style={{ fontFamily: 'var(--font-mono)' }}>#{e.currentDispatchId}</span>
+                    </button>
+                  )}
+
+                  {e.metrics && Object.keys(e.metrics).length > 0 && (
+                    <div style={{ marginTop: 14 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: muted, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>Live Metrics</div>
+                      <MetricsGrid metrics={e.metrics} limit={6}/>
+                    </div>
+                  )}
+
+                  {e.errorMessage && (
+                    <div style={{ marginTop: 12, padding: '9px 10px', borderRadius: 8, background: '#fde4e4', color: '#a93445', fontSize: 12.5, fontWeight: 600 }}>
+                      {e.errorMessage}
+                    </div>
+                  )}
 
                   <div style={{ marginTop: 14 }}>
                     <div style={{ fontSize: 11, fontWeight: 700, color: muted, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>Capabilities</div>

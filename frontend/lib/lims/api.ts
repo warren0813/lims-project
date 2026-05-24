@@ -33,6 +33,7 @@ export interface SampleRow {
   size: string
   status: string
   raw_status?: string
+  rawStatus?: string
   requestId?: ID
   requestNo?: string
   sampleName?: string
@@ -49,8 +50,11 @@ export interface RequestRow {
   id: ID
   requestNo: string
   title: string
+  displayTitle?: string
+  groupKey?: string
   status: string
   raw_status?: string
+  rawStatus?: string
   urgency: string
   priority: string
   requester?: { username: string }
@@ -108,6 +112,8 @@ export interface DispatchRow {
   raw_status?: string
   progress?: number
   currentStep?: string
+  metrics?: Record<string, unknown>
+  waferCount?: number
   workerNode?: string
   queueName?: string
   errorMessage?: string
@@ -140,6 +146,8 @@ export interface EquipmentRow {
   progress?: number
   currentStep?: string
   currentDispatchId?: ID | null
+  metrics?: Record<string, unknown>
+  waferCount?: number
   workerNode?: string
   lastHeartbeat?: string | null
   errorMessage?: string
@@ -187,6 +195,7 @@ export interface ProposalItemRow {
   id: ID
   sampleId: ID
   sampleNo: string
+  sampleStatus?: string
   requestId: ID
   requestNo: string
   fabUser: string
@@ -205,6 +214,10 @@ export interface ProposalBatchRow {
   equipmentTypeName: string
   equipmentId: ID | null
   equipmentName: string | null
+  equipmentCapacity?: number | null
+  equipmentStatus?: string | null
+  equipmentQueueName?: string | null
+  recipeMaxBatchSize?: number
   priority: string
   order: number
   estimatedRuntimeSec: number
@@ -256,7 +269,7 @@ const REQUEST_STATUS_MAP: Record<string, string> = {
   queued: 'in_progress',
   dispatched: 'in_progress',
   running: 'in_progress',
-  final_check: 'final_check',
+  final_check: 'in_progress',
   completed: 'completed',
   failed: 'failed',
   rejected: 'rejected',
@@ -343,6 +356,27 @@ function normalizeRequestPayload(payload: any) {
   }
 }
 
+function expandRequestPayloads(payload: any) {
+  const explicitIds = payload.experiment_type_ids ?? payload.experimentTypeIds ?? []
+  const sampleIds = (payload.samples || []).flatMap((sample: any) => sample.expIds || sample.experimentTypeIds || [])
+  const experimentIds = Array.from(new Set([...explicitIds, ...sampleIds].map(String))).filter(Boolean)
+  const ids = experimentIds.length ? experimentIds : [String(normalizeRequestPayload(payload).experiment_type_id || '')].filter(Boolean)
+  return ids.map((experimentId) => {
+    const samples = (payload.samples || []).filter((sample: any) => {
+      const perSample = sample.expIds || sample.experimentTypeIds
+      return !Array.isArray(perSample) || perSample.map(String).includes(experimentId)
+    })
+    return normalizeRequestPayload({
+      ...payload,
+      title: payload.title,
+      experiment_type_id: experimentId,
+      experiment_type_ids: [experimentId],
+      preferred_recipe_id: payload.preferredRecipeByExperiment?.[experimentId] ?? payload.preferred_recipe_by_experiment?.[experimentId] ?? null,
+      samples,
+    })
+  })
+}
+
 function normalizeSampleRow(s: any): SampleRow {
   const raw = s.status || 'pending_receive'
   const mapped = SAMPLE_STATUS_MAP[raw] || raw
@@ -353,6 +387,7 @@ function normalizeSampleRow(s: any): SampleRow {
     size: s.quantity ? String(s.quantity) : '1',
     status: mapped,
     raw_status: raw,
+    rawStatus: raw,
     requestId: s.request_id ? String(s.request_id) : undefined,
     requestNo: s.request_no,
     sampleName: s.sample_name,
@@ -367,12 +402,18 @@ function normalizeSampleRow(s: any): SampleRow {
 
 function normalizeRequestRow(r: any): RequestRow {
   const raw = r.status || 'draft'
+  const displayTitle = String(r.title || '').replace(/\s*[·•]\s*\d+\/\d+\s*$/, '').trim()
+  const groupDay = formatTimestamp(r.created_at)?.slice(0, 10) || ''
+  const requesterName = r.requester?.username || ''
   return {
     id: String(r.id),
     requestNo: r.request_no || r.requestNo || '',
     title: r.title,
+    displayTitle,
+    groupKey: `${requesterName}|${displayTitle.toLowerCase()}|${groupDay}`,
     status: REQUEST_STATUS_MAP[raw] || raw,
     raw_status: raw,
+    rawStatus: raw,
     urgency: urgencyFromPriority(r.priority),
     priority: r.priority || 'normal',
     requester: r.requester,
@@ -456,6 +497,8 @@ function normalizeDispatch(d: any): DispatchRow {
     raw_status: raw,
     progress: d.progress ?? 0,
     currentStep: d.current_step || '',
+    metrics: d.metrics || {},
+    waferCount: d.wafer_count ?? 0,
     workerNode: d.worker_node || '',
     queueName: d.queue_name || '',
     errorMessage: d.error_message || '',
@@ -520,6 +563,10 @@ function normalizeProposal(p: any): ProposalRow {
       equipmentTypeName: b.equipment_type_name,
       equipmentId: b.equipment_id ? String(b.equipment_id) : null,
       equipmentName: b.equipment_name || null,
+      equipmentCapacity: b.equipment_capacity ?? null,
+      equipmentStatus: b.equipment_status || null,
+      equipmentQueueName: b.equipment_queue_name || null,
+      recipeMaxBatchSize: b.recipe_max_batch_size,
       priority: b.priority,
       order: b.order,
       estimatedRuntimeSec: b.estimated_runtime_sec,
@@ -529,6 +576,7 @@ function normalizeProposal(p: any): ProposalRow {
         id: String(item.id),
         sampleId: String(item.sample_id),
         sampleNo: item.sample_no,
+        sampleStatus: item.sample_status,
         requestId: String(item.request_id),
         requestNo: item.request_no,
         fabUser: item.fab_user,
@@ -554,6 +602,8 @@ function normalizeEquipment(e: any): EquipmentRow {
     progress: e.progress ?? 0,
     currentStep: e.current_step || '',
     currentDispatchId: e.current_dispatch_id ? String(e.current_dispatch_id) : null,
+    metrics: e.metrics || {},
+    waferCount: e.wafer_count ?? 0,
     workerNode: e.worker_node_name || '',
     lastHeartbeat: formatTimestamp(e.last_heartbeat_at),
     errorMessage: e.error_message || '',
@@ -887,6 +937,14 @@ export const api = {
     async create(payload: any): Promise<RequestDetail> {
       return normalizeRequestDetail(await call<any>('/requests/drafts', { method: 'POST', body: JSON.stringify(normalizeRequestPayload(payload)) }))
     },
+    async createMany(payload: any): Promise<RequestDetail[]> {
+      const bodies = expandRequestPayloads(payload)
+      const out = []
+      for (const body of bodies) {
+        out.push(normalizeRequestDetail(await call<any>('/requests/drafts', { method: 'POST', body: JSON.stringify(body) })))
+      }
+      return out
+    },
     async createDraft(payload: any): Promise<RequestDetail> {
       return normalizeRequestDetail(await call<any>('/requests/drafts', { method: 'POST', body: JSON.stringify(normalizeRequestPayload(payload)) }))
     },
@@ -1026,8 +1084,8 @@ export const api = {
     async summary() {
       return call<any>('/reports/summary')
     },
-    async equipmentUtilization() {
-      const out = await call<any>('/reports/equipment-utilization')
+    async equipmentUtilization(q: Record<string, string> = {}) {
+      const out = await call<any>(`/reports/equipment-utilization?${new URLSearchParams(q)}`)
       return {
         ...out,
         data: (out.data || []).map((row: any) => ({
@@ -1041,8 +1099,8 @@ export const api = {
         })),
       }
     },
-    async requestStatistics() {
-      const out = await call<any>('/reports/request-statistics')
+    async requestStatistics(q: Record<string, string> = {}) {
+      const out = await call<any>(`/reports/request-statistics?${new URLSearchParams(q)}`)
       return {
         ...out,
         total_requests: out.total_requests ?? out.total ?? 0,

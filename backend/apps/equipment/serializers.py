@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from apps.equipment.models import Equipment, EquipmentType, Recipe
+from apps.dispatch.simulator import generate_live_metrics
 
 
 def equipment_type_out(equipment_type: EquipmentType) -> dict[str, Any]:
@@ -51,6 +52,16 @@ def equipment_out(equipment: Equipment) -> dict[str, Any]:
                 "experiment_type": recipe.experiment_type.name,
             }
         )
+    current_dispatch = equipment.current_dispatch
+    wafer_count = current_dispatch.wip.items.count() if current_dispatch else 0
+    metrics = {}
+    if current_dispatch:
+        metrics = generate_live_metrics(
+            current_dispatch.wip.recipe.recipe_code,
+            current_dispatch.wip.experiment_type.name,
+            equipment.progress,
+            wafer_count,
+        )
     return {
         "id": str(equipment.id),
         "equipment_code": equipment.equipment_code,
@@ -66,6 +77,8 @@ def equipment_out(equipment: Equipment) -> dict[str, Any]:
         ),
         "current_step": equipment.current_step,
         "progress": equipment.progress,
+        "metrics": metrics,
+        "wafer_count": wafer_count,
         "location": equipment.location,
         "is_active": equipment.is_active,
         "last_heartbeat_at": equipment.last_heartbeat_at,

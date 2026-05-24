@@ -37,6 +37,10 @@ const useMgrRequests = () => {
       .finally(() => setLoading(false));
   }, []);
   React.useEffect(() => { refresh(); }, [refresh]);
+  React.useEffect(() => {
+    const h = setInterval(refresh, 5000);
+    return () => clearInterval(h);
+  }, [refresh]);
   return { data, loading, error, refresh };
 };
 
@@ -92,14 +96,15 @@ const useMgrExperimentTypes = () => {
   const [data, setData] = mS([]);
   const [loading, setLoading] = mS(true);
   const [error, setError] = mS(null);
-  React.useEffect(() => {
+  const refresh = React.useCallback(() => {
     if (!window.api || !window.api.experimentTypes) { setLoading(false); return; }
     window.api.experimentTypes.list()
       .then(rs => { setData(rs); setError(null); })
       .catch(err => setError(err.message || String(err)))
       .finally(() => setLoading(false));
   }, []);
-  return { data, loading, error };
+  React.useEffect(() => { refresh(); }, [refresh]);
+  return { data, loading, error, refresh };
 };
 
 // Best-effort mapping from a live experiment-type name to the local
@@ -169,7 +174,94 @@ const useMgrRequestDetail = (id) => {
       .finally(() => setLoading(false));
   }, [id]);
   React.useEffect(() => { refresh(); }, [refresh]);
+  React.useEffect(() => {
+    const h = setInterval(refresh, 5000);
+    return () => clearInterval(h);
+  }, [refresh]);
   return { data, loading, error, refresh };
+};
+
+const stripRequestSuffix = (title) => String(title || '').replace(/\s*[·•]\s*\d+\/\d+\s*$/, '').trim();
+const mgrRequestGroupKey = (r) => r.groupKey || `${r.requester?.username || ''}|${stripRequestSuffix(r.title).toLowerCase()}|${(r.created || '').slice(0, 10)}`;
+const mgrAggregateStatus = (items) => {
+  const statuses = items.map(r => r.status);
+  const rawStatuses = items.map(r => r.rawStatus || r.raw_status || r.status);
+  if (statuses.includes('rejected')) return 'rejected';
+  if (statuses.includes('returned')) return 'returned';
+  if (statuses.includes('in_progress') || statuses.includes('waiting_sample_receive') || rawStatuses.includes('final_check')) return 'in_progress';
+  if (statuses.includes('submitted')) return 'submitted';
+  if (statuses.every(s => s === 'completed')) return 'completed';
+  if (statuses.every(s => s === 'draft')) return 'draft';
+  if (statuses.every(s => s === 'cancelled')) return 'cancelled';
+  if (statuses.includes('completed')) return 'in_progress';
+  return statuses[0] || 'submitted';
+};
+const mergeMgrRequests = (items) => {
+  const sorted = [...items].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  const first = sorted[0];
+  const samples = [];
+  const sampleMap = new Map();
+  sorted.forEach(r => (r.samples || []).forEach(s => {
+    const key = `${s.wafer || s.sampleNo}|${s.lotId || ''}`;
+    const current = sampleMap.get(key);
+    if (!current) {
+      const next = { ...s, sourceSampleIds: [s.id].filter(Boolean), expIds: [...(r.expIds || [])], requests: [r] };
+      sampleMap.set(key, next);
+      samples.push(next);
+    } else {
+      current.sourceSampleIds = Array.from(new Set([...(current.sourceSampleIds || []), s.id].filter(Boolean)));
+      current.expIds = Array.from(new Set([...(current.expIds || []), ...(r.expIds || [])]));
+      current.requests.push(r);
+      if (s.status === 'completed' || s.status === 'in_wip' || s.status === 'received') current.status = s.status;
+    }
+  }));
+  return {
+    ...first,
+    title: stripRequestSuffix(first.title),
+    displayTitle: stripRequestSuffix(first.title),
+    status: mgrAggregateStatus(sorted),
+    rawStatus: mgrAggregateStatus(sorted),
+    raw_status: mgrAggregateStatus(sorted),
+    expIds: Array.from(new Set(sorted.flatMap(r => r.expIds || []))),
+    experiment_types: Array.from(new Map(sorted.flatMap(r => r.experiment_types || []).map(et => [et.id, et])).values()),
+    samples,
+    sampleCount: samples.length || sorted.reduce((n, r) => n + (r.sampleCount || 0), 0),
+    history: Array.from(new Map(
+      sorted.flatMap(r => r.history || [])
+        .map(h => [`${h.action}|${h.by}|${h.at}|${h.note || ''}`, h])
+    ).values()).sort((a, b) => String(b.at || '').localeCompare(String(a.at || ''))),
+    childRequests: sorted,
+  };
+};
+const groupMgrRequests = (requests) => {
+  const map = new Map();
+  requests.forEach(r => {
+    const key = mgrRequestGroupKey(r);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(r);
+  });
+  return Array.from(map.values()).map(mergeMgrRequests);
+};
+
+const useMgrGroupedRequestDetail = (id) => {
+  const { data, loading, error, refresh } = useMgrRequestDetail(id);
+  const [grouped, setGrouped] = mS(null);
+  React.useEffect(() => {
+    if (!data || !window.api?.requests) {
+      setGrouped(data);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const rows = await window.api.requests.list().catch(() => []);
+      const key = mgrRequestGroupKey(data);
+      const siblings = rows.filter(row => mgrRequestGroupKey(row) === key);
+      const details = await Promise.all(siblings.map(row => window.api.requests.get(row.id).catch(() => row)));
+      if (!cancelled) setGrouped(mergeMgrRequests(details.length ? details : [data]));
+    })();
+    return () => { cancelled = true; };
+  }, [data?.id, data?.updated, data?.status]);
+  return { data: grouped || data, loading, error, refresh };
 };
 
 // ── Domain seeds ─────────────────────────────────────────────────
@@ -306,6 +398,7 @@ const MGR_RECIPE_SEED = [
 const STATUS_LABEL = {
   draft:       { label: 'Draft',       bg: '#ebebf0', fg: '#5a5a6e' },
   submitted:   { label: 'Submitted',   bg: '#fef0d4', fg: '#b8720e' },
+  waiting_sample_receive: { label: 'Waiting Samples', bg: '#fef0d4', fg: '#b8720e' },
   in_progress: { label: 'In Progress', bg: '#d4eaf0', fg: '#2a7a91' },
   returned:    { label: 'Returned',    bg: '#f9d7e0', fg: '#a73d56' },
   rejected:    { label: 'Rejected',    bg: '#fde4e4', fg: '#c0394a' },
@@ -460,8 +553,9 @@ const findExpById = (id) => MGR_EXPERIMENTS.find(e => e.id === id);
 const MgrAllRequests = ({ navigate }) => {
   const { data: requests, loading, error } = useMgrRequests();
   const [tab, setTab] = mS('pending');
-  const counts = mM(() => Object.fromEntries(ALL_REQ_TABS.map(t => [t.id, requests.filter(t.filter).length])), [requests]);
-  const list = requests.filter(ALL_REQ_TABS.find(t => t.id === tab)?.filter || (() => true));
+  const groupedRequests = mM(() => groupMgrRequests(requests), [requests]);
+  const counts = mM(() => Object.fromEntries(ALL_REQ_TABS.map(t => [t.id, groupedRequests.filter(t.filter).length])), [groupedRequests]);
+  const list = groupedRequests.filter(ALL_REQ_TABS.find(t => t.id === tab)?.filter || (() => true));
 
   if (loading && requests.length === 0) {
     return (
@@ -513,7 +607,7 @@ const MgrAllRequests = ({ navigate }) => {
       </div>
 
       <div style={{ fontSize: 13, color: mMuted, marginBottom: 14 }}>
-        Showing <strong style={{ color: mInk }}>{list.length}</strong> of {requests.length} requests
+        Showing <strong style={{ color: mInk }}>{list.length}</strong> of {groupedRequests.length} requests
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -547,12 +641,14 @@ const MgrAllRequests = ({ navigate }) => {
                 #{String(r.id).padStart(4, '0')}
               </span>
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 15, fontWeight: 700, color: mInk }}>{r.title}</div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: mInk }}>{r.displayTitle || r.title}</div>
                 <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 12.5, color: mMuted, flexWrap: 'wrap', whiteSpace: 'nowrap' }}>
                   <MI.Calendar size={12}/>
                   <span style={{ fontFamily: 'var(--font-mono)' }}>{((r.submitted || r.created) || '').split(' ')[0] || '—'}</span>
                   <span aria-hidden>·</span>
                   <span>{sampleCount} wafer{sampleCount === 1 ? '' : 's'}</span>
+                  <span aria-hidden>·</span>
+                  <span>{(r.expIds || []).length} exp</span>
                   <span aria-hidden>·</span>
                   <span>by <span style={{ fontFamily: 'var(--font-mono)', color: mText2 }}>{requester}</span></span>
                 </div>
@@ -623,7 +719,7 @@ const ApprovalModal = ({ open, onClose, action, onSubmit }) => {
 
 // ── Request detail (manager view) ─────────────────────────────
 const MgrRequestDetail = ({ id, navigate, showToast }) => {
-  const { data: r, loading, error, refresh } = useMgrRequestDetail(id);
+  const { data: r, loading, error, refresh } = useMgrGroupedRequestDetail(id);
   const [modal, setModal] = mS(null); // 'RETURN' | 'REJECT' | null
   const [busy, setBusy] = mS(false);
   const [actionError, setActionError] = mS(null);
@@ -667,7 +763,11 @@ const MgrRequestDetail = ({ id, navigate, showToast }) => {
 
   const onApprove = () => {
     if (!window.confirm(`Approve "${r.title}"?`)) return;
-    runAction(() => window.api.requests.approve(r.id), `#${r.id} approved`);
+    const targets = (r.childRequests || [r]).filter(item => item.status === 'submitted');
+    runAction(
+      () => Promise.all(targets.map(item => window.api.requests.approve(item.id))),
+      `${targets.length} request${targets.length === 1 ? '' : 's'} approved`,
+    );
   };
   const onMarkComplete = () => {
     if (!window.confirm(`Mark "${r.title}" as complete? This closes the request.`)) return;
@@ -676,10 +776,17 @@ const MgrRequestDetail = ({ id, navigate, showToast }) => {
   const onSubmitModal = async (reason) => {
     const action = modal;
     setModal(null);
+    const targets = (r.childRequests || [r]).filter(item => item.status === 'submitted');
     if (action === 'RETURN') {
-      await runAction(() => window.api.requests.returnRequest(r.id, reason), `#${r.id} returned`);
+      await runAction(
+        () => Promise.all(targets.map(item => window.api.requests.returnRequest(item.id, reason))),
+        `${targets.length} request${targets.length === 1 ? '' : 's'} returned`,
+      );
     } else if (action === 'REJECT') {
-      await runAction(() => window.api.requests.reject(r.id, reason), `#${r.id} rejected`);
+      await runAction(
+        () => Promise.all(targets.map(item => window.api.requests.reject(item.id, reason))),
+        `${targets.length} request${targets.length === 1 ? '' : 's'} rejected`,
+      );
     }
   };
 
@@ -699,9 +806,9 @@ const MgrRequestDetail = ({ id, navigate, showToast }) => {
     <Page
       breadcrumb={<Breadcrumb items={[
         { label: 'All Requests', onClick: () => navigate({ page: 'mgr_all_requests' }) },
-        { label: r.title },
+        { label: r.displayTitle || r.title },
       ]}/>}
-      title={r.title}
+      title={r.displayTitle || r.title}
       subtitle={
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <span style={{
@@ -791,7 +898,9 @@ const MgrRequestDetail = ({ id, navigate, showToast }) => {
       <Card padding={0}>
         <CardHeader>Samples · Experiments</CardHeader>
         <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {r.samples.map((s, si) => (
+          {r.samples.map((s, si) => {
+            const sampleExps = s.expIds?.length ? exps.filter(e => s.expIds.includes(e.id)) : exps;
+            return (
             <button key={si} onClick={() => navigate({ page: 'lab_wafer', id: s.id })} style={{
               display: 'grid', gridTemplateColumns: '180px 1fr 20px',
               alignItems: 'center', gap: 18,
@@ -812,7 +921,7 @@ const MgrRequestDetail = ({ id, navigate, showToast }) => {
                 <div style={{ fontSize: 11.5, color: mMuted, marginTop: 4, marginLeft: 23 }}>{s.size}</div>
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                {exps.map(e => (
+                {sampleExps.map(e => (
                   <span key={e.id} style={{
                     display: 'inline-flex', alignItems: 'center', gap: 7,
                     padding: '5px 11px 5px 6px', borderRadius: 999,
@@ -830,7 +939,8 @@ const MgrRequestDetail = ({ id, navigate, showToast }) => {
               </div>
               <MI.ChevronRight size={16} color={mMuted}/>
             </button>
-          ))}
+            );
+          })}
         </div>
       </Card>
 
@@ -849,9 +959,13 @@ const MgrRequestDetail = ({ id, navigate, showToast }) => {
 // Edit mode → experiment_type is locked (backend `RecipeUpdate`
 // intentionally doesn't accept it), shown as a read-only chip.
 const RecipeModal = ({ open, onClose, onSaved, initial }) => {
-  const { data: experimentTypes, loading: typesLoading } = useMgrExperimentTypes();
+  const { data: experimentTypes, loading: typesLoading, refresh: refreshExperimentTypes } = useMgrExperimentTypes();
   const [name, setName] = mS('');
   const [experimentTypeId, setExperimentTypeId] = mS('');
+  const [newExpOpen, setNewExpOpen] = mS(false);
+  const [newExpName, setNewExpName] = mS('');
+  const [newExpCode, setNewExpCode] = mS('');
+  const [newExpCategory, setNewExpCategory] = mS('MA');
   const [desc, setDesc] = mS('');
   const [paramsKv, setParamsKv] = mS({});
   const [paramsJson, setParamsJson] = mS('{}');
@@ -993,14 +1107,50 @@ const RecipeModal = ({ open, onClose, onSaved, initial }) => {
               <span style={{ fontSize: 11, color: mMuted, marginLeft: 4 }}>(locked)</span>
             </div>
           ) : (
-            <SelectInput
-              value={experimentTypeId === '' ? '' : String(experimentTypeId)}
-              onChange={(e) => setExperimentTypeId(e.target.value ? Number(e.target.value) : '')}
-            >
-              {typesLoading && <option value="">Loading…</option>}
-              {!typesLoading && experimentTypes.length === 0 && <option value="">No experiment types</option>}
-              {experimentTypes.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-            </SelectInput>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 10 }}>
+              <SelectInput
+                value={experimentTypeId}
+                onChange={(e) => setExperimentTypeId(e.target.value)}
+              >
+                {typesLoading && <option value="">Loading…</option>}
+                {!typesLoading && experimentTypes.length === 0 && <option value="">No experiment types</option>}
+                {experimentTypes.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </SelectInput>
+              <SecondaryBtn onClick={() => setNewExpOpen(v => !v)} type="button">New Type</SecondaryBtn>
+            </div>
+          )}
+          {newExpOpen && !isEdit && (
+            <div style={{ marginTop: 10, padding: 12, borderRadius: 10, border: `1px solid ${mLine}`, background: mBgSoft }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '90px 1fr 90px', gap: 8 }}>
+                <TextInput value={newExpCode} onChange={(e) => setNewExpCode(e.target.value.toUpperCase())} placeholder="CODE"/>
+                <TextInput value={newExpName} onChange={(e) => setNewExpName(e.target.value)} placeholder="Experiment type name"/>
+                <SelectInput value={newExpCategory} onChange={(e) => setNewExpCategory(e.target.value)}>
+                  {['MA', 'RA', 'TM', 'FA'].map(c => <option key={c} value={c}>{c}</option>)}
+                </SelectInput>
+              </div>
+              <div style={{ marginTop: 10, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                <SecondaryBtn onClick={() => setNewExpOpen(false)}>Cancel</SecondaryBtn>
+                <PrimaryBtn
+                  disabled={!newExpName.trim() || !newExpCode.trim()}
+                  onClick={async () => {
+                    try {
+                      const created = await window.api.experimentTypes.create({
+                        code: newExpCode.trim(),
+                        name: newExpName.trim(),
+                        labCategory: newExpCategory,
+                      });
+                      await refreshExperimentTypes();
+                      setExperimentTypeId(created.id);
+                      setNewExpOpen(false);
+                      setNewExpName('');
+                      setNewExpCode('');
+                    } catch (e) {
+                      setErr(e.message || String(e));
+                    }
+                  }}
+                >Add Type</PrimaryBtn>
+              </div>
+            </div>
           )}
         </div>
         <div>
@@ -1271,7 +1421,91 @@ const ReportCard = ({ title, subtitle, accent, accentBg, icon, onGenerate }) => 
   );
 };
 
+const RANGE_DAYS = { '1D': 1, '1W': 7, '1M': 30, '1Y': 365 };
+const dateWindow = (range) => {
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(end.getDate() - ((RANGE_DAYS[range] || 30) - 1));
+  const fmt = (d) => d.toISOString().slice(0, 10);
+  return { start_date: fmt(start), end_date: fmt(end) };
+};
+
+const MiniBarChart = ({ rows, valueKey, labelKey, accent }) => {
+  const max = Math.max(1, ...rows.map(r => Number(r[valueKey] || 0)));
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {rows.map(row => {
+        const value = Number(row[valueKey] || 0);
+        return (
+          <div key={row[labelKey]} style={{ display: 'grid', gridTemplateColumns: '150px 1fr 52px', gap: 10, alignItems: 'center' }}>
+            <div style={{ fontSize: 12.5, color: mText2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row[labelKey]}</div>
+            <div style={{ height: 9, borderRadius: 999, background: '#ececf2', overflow: 'hidden' }}>
+              <div style={{ width: `${Math.max(3, (value / max) * 100)}%`, height: '100%', borderRadius: 999, background: accent }}/>
+            </div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: mInk, textAlign: 'right', fontWeight: 700 }}>{value}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+const RangeChartCard = ({ title, subtitle, accent, icon, rows, valueKey, labelKey, range, setRange, loading }) => (
+  <Card padding={0}>
+    <CardHeader>
+      {icon}
+      <span style={{ color: mInk, fontSize: 13, textTransform: 'none', letterSpacing: 0 }}>{title}</span>
+      <div style={{ marginLeft: 'auto', display: 'inline-flex', gap: 4, padding: 3, borderRadius: 999, background: mBgSoft, border: `1px solid ${mLineSft}` }}>
+        {Object.keys(RANGE_DAYS).map(r => (
+          <button key={r} onClick={() => setRange(r)} style={{
+            minWidth: 34, padding: '4px 8px', borderRadius: 999, border: 'none',
+            background: range === r ? mInk : 'transparent',
+            color: range === r ? '#fff' : mText2,
+            fontFamily: 'var(--font-mono)', fontSize: 11.5, fontWeight: 700,
+            cursor: 'pointer',
+          }}>{r}</button>
+        ))}
+      </div>
+    </CardHeader>
+    <div style={{ padding: 22 }}>
+      <div style={{ fontSize: 12.5, color: mText2, marginBottom: 16 }}>{subtitle}</div>
+      {loading ? (
+        <div style={{ padding: 28, textAlign: 'center', color: mMuted, fontSize: 13 }}>Loading…</div>
+      ) : rows.length === 0 ? (
+        <div style={{ padding: 28, textAlign: 'center', color: mMuted, fontSize: 13 }}>No data in this range</div>
+      ) : (
+        <MiniBarChart rows={rows} valueKey={valueKey} labelKey={labelKey} accent={accent}/>
+      )}
+    </div>
+  </Card>
+);
+
 const MgrReports = () => {
+  const [range, setRange] = mS('1M');
+  const [equipmentRows, setEquipmentRows] = mS([]);
+  const [requestRows, setRequestRows] = mS([]);
+  const [loadingCharts, setLoadingCharts] = mS(true);
+  React.useEffect(() => {
+    let cancelled = false;
+    setLoadingCharts(true);
+    const q = dateWindow(range);
+    Promise.all([
+      window.api.reports.equipmentUtilization(q).catch(() => ({ data: [] })),
+      window.api.reports.requestStatistics(q).catch(() => ({ status_distribution: {} })),
+    ]).then(([eq, req]) => {
+      if (cancelled) return;
+      setEquipmentRows((eq.data || []).map(row => ({
+        label: row.equipment?.name || row.equipment_name || row.equipment_id,
+        value: row.dispatch_count ?? row.wip_count ?? 0,
+      })).slice(0, 8));
+      setRequestRows(Object.entries(req.status_distribution || {}).map(([status, value]) => ({
+        label: status.replace(/_/g, ' '),
+        value,
+      })));
+    }).finally(() => { if (!cancelled) setLoadingCharts(false); });
+    return () => { cancelled = true; };
+  }, [range]);
+
   // Backend `EquipmentUtilizationOut` returns `{period, start_date, end_date,
   // data: [{equipment: {id, name}, wip_count, sample_count}]}`. Collapse to
   // the 3-up summary the card layout expects: units covered, total WIPs
@@ -1310,6 +1544,32 @@ const MgrReports = () => {
       title="Reports"
       subtitle="報表 — generate equipment utilization and request statistics"
     >
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18, marginBottom: 18 }}>
+        <RangeChartCard
+          title="Equipment Utilization"
+          subtitle="Dispatch volume by equipment for the selected range."
+          accent="#6c67b8"
+          icon={<MI.TrendUp size={14} color="#6c67b8"/>}
+          rows={equipmentRows}
+          valueKey="value"
+          labelKey="label"
+          range={range}
+          setRange={setRange}
+          loading={loadingCharts}
+        />
+        <RangeChartCard
+          title="Request Statistics"
+          subtitle="Request status distribution for the selected range."
+          accent="#157a4a"
+          icon={<MI.ClipboardList size={14} color="#157a4a"/>}
+          rows={requestRows}
+          valueKey="value"
+          labelKey="label"
+          range={range}
+          setRange={setRange}
+          loading={loadingCharts}
+        />
+      </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
         <ReportCard
           title="Equipment Utilization"
@@ -1533,9 +1793,10 @@ const TrendChart = () => {
 
 const MgrDashboard = ({ navigate }) => {
   const { requests, equipmentCount, loading: countsLoading, error: countsError } = useMgrDashboardData();
-  const pending = requests.filter(r => r.status === 'submitted');
-  const inProgress = requests.filter(r => r.status === 'in_progress').length;
-  const completed = requests.filter(r => r.status === 'completed').length;
+  const groupedRequests = mM(() => groupMgrRequests(requests), [requests]);
+  const pending = groupedRequests.filter(r => r.status === 'submitted');
+  const inProgress = groupedRequests.filter(r => r.status === 'in_progress').length;
+  const completed = groupedRequests.filter(r => r.status === 'completed').length;
 
   // Show "—" while the initial fetch is in flight rather than the
   // misleading "0" that an empty filter would produce.
@@ -1612,12 +1873,14 @@ const MgrDashboard = ({ navigate }) => {
               #{String(r.id).padStart(4, '0')}
             </span>
             <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 14, fontWeight: 700, color: mInk }}>{r.title}</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: mInk }}>{r.displayTitle || r.title}</div>
               <div style={{ fontSize: 12, color: mMuted, marginTop: 3, display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', whiteSpace: 'nowrap' }}>
                 <MI.Calendar size={11}/>
                 <span style={{ fontFamily: 'var(--font-mono)' }}>{(r.submitted || r.created || '').split(' ')[0] || '—'}</span>
                 <span aria-hidden>·</span>
                 <span>{(r.sampleCount ?? r.samples.length)} wafer{(r.sampleCount ?? r.samples.length) === 1 ? '' : 's'}</span>
+                <span aria-hidden>·</span>
+                <span>{r.expIds?.length || r.experiment_types?.length || 0} experiment{(r.expIds?.length || r.experiment_types?.length || 0) === 1 ? '' : 's'}</span>
                 <span aria-hidden>·</span>
                 <span>by <span style={{ fontFamily: 'var(--font-mono)', color: mText2 }}>{r.requester?.username || r.history[0]?.by || '—'}</span></span>
               </div>

@@ -67,6 +67,69 @@ def build_steps(recipe_code: str, experiment_name: str) -> list[str]:
     return SIMULATION_STEPS[recipe_family(recipe_code, experiment_name)]
 
 
+def generate_live_metrics(
+    recipe_code: str,
+    experiment_name: str,
+    progress: float,
+    wafer_count: int = 0,
+) -> dict[str, Any]:
+    family = recipe_family(recipe_code, experiment_name)
+    pct = max(0.0, min(float(progress or 0), 100.0))
+    phase = pct / 100.0
+    wobble = ((int(pct) % 9) - 4) * 0.08
+    base = {
+        "progress_percent": round(pct, 2),
+        "wafer_count": wafer_count,
+        "tool_load_percent": round(min(100, 18 + wafer_count * 9 + pct * 0.55), 1),
+    }
+    if family == "SEM":
+        base.update(
+            {
+                "chamber_pressure_pa": round(max(0.0008, 0.09 * (1 - phase) + 0.0012), 5),
+                "beam_voltage_kv": round(5 + min(1.2, phase * 1.2), 2),
+                "stage_temperature_c": round(24 + phase * 3 + wobble, 1),
+                "scan_rate_fps": round(8 + phase * 18, 1),
+            }
+        )
+    elif family == "THIN_FILM":
+        base.update(
+            {
+                "stage_temperature_c": round(25 + phase * 2 + wobble, 1),
+                "optical_signal_percent": round(71 + phase * 22, 1),
+                "measurement_points_done": int(49 * phase),
+                "fit_confidence_percent": round(88 + phase * 10, 1),
+            }
+        )
+    elif family == "ETCH":
+        base.update(
+            {
+                "chamber_temperature_c": round(32 + phase * 38 + wobble, 1),
+                "rf_power_w": round(90 + phase * 160, 1),
+                "gas_flow_sccm": round(42 + phase * 18, 1),
+                "chamber_pressure_pa": round(9.5 + phase * 2.5, 2),
+            }
+        )
+    elif family == "SHEET_RES":
+        base.update(
+            {
+                "stage_temperature_c": round(24 + phase * 1.8 + wobble, 1),
+                "probe_force_g": round(38 + phase * 4, 1),
+                "measurement_points_done": int(49 * phase),
+                "contact_resistance_ohm": round(0.18 - min(0.08, phase * 0.08), 3),
+            }
+        )
+    else:
+        base.update(
+            {
+                "chamber_temperature_c": round(25 + phase * 925 + wobble, 1),
+                "nitrogen_flow_slm": round(18 + phase * 4, 1),
+                "thermal_stability_percent": round(82 + phase * 17, 1),
+                "hold_elapsed_percent": round(max(0, phase - 0.35) / 0.65 * 100, 1),
+            }
+        )
+    return base
+
+
 def generate_result(recipe_code: str, experiment_name: str) -> tuple[str, dict[str, Any], str]:
     family = recipe_family(recipe_code, experiment_name)
     if family == "SEM":

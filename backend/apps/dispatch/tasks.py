@@ -172,6 +172,13 @@ def run_dispatch_job(self, dispatch_id: str) -> dict:
             related_entity=dispatch,
         )
         notify_role(
+            Role.LAB_USER,
+            "equipment.fault",
+            f"Equipment fault on {dispatch.dispatch_no}",
+            str(exc),
+            related_entity=dispatch,
+        )
+        notify_role(
             Role.LAB_MANAGER,
             "equipment.fault",
             f"Equipment fault on {dispatch.dispatch_no}",

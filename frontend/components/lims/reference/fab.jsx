@@ -78,6 +78,10 @@ const useRequests = () => {
       .finally(() => setLoading(false));
   }, []);
   React.useEffect(() => { refresh(); }, [refresh]);
+  React.useEffect(() => {
+    const h = setInterval(refresh, 5000);
+    return () => clearInterval(h);
+  }, [refresh]);
   return { data, loading, error, refresh };
 };
 
@@ -100,7 +104,102 @@ const useRequestDetail = (id) => {
       .finally(() => setLoading(false));
   }, [id]);
   React.useEffect(() => { refresh(); }, [refresh]);
+  React.useEffect(() => {
+    const h = setInterval(refresh, 5000);
+    return () => clearInterval(h);
+  }, [refresh]);
   return { data, loading, error, refresh };
+};
+
+const stripSplitSuffix = (title) => String(title || '').replace(/\s*[·•]\s*\d+\/\d+\s*$/, '').trim();
+const requestGroupKey = (r) => r.groupKey || `${r.requester?.username || ''}|${stripSplitSuffix(r.title).toLowerCase()}|${(r.created || '').slice(0, 10)}`;
+const aggregateStatus = (items) => {
+  const statuses = items.map(r => r.status);
+  const rawStatuses = items.map(r => r.rawStatus || r.raw_status || r.status);
+  if (statuses.includes('rejected')) return 'rejected';
+  if (statuses.includes('returned')) return 'returned';
+  if (statuses.includes('in_progress') || statuses.includes('waiting_sample_receive') || rawStatuses.includes('final_check')) return 'in_progress';
+  if (statuses.includes('submitted')) return 'submitted';
+  if (statuses.every(s => s === 'completed')) return 'completed';
+  if (statuses.every(s => s === 'draft')) return 'draft';
+  if (statuses.every(s => s === 'cancelled')) return 'cancelled';
+  if (statuses.includes('completed')) return 'in_progress';
+  return statuses[0] || 'submitted';
+};
+const mergeRequests = (items) => {
+  const sorted = [...items].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  const first = sorted[0];
+  const samples = [];
+  const sampleMap = new Map();
+  sorted.forEach(r => (r.samples || []).forEach(s => {
+    const key = `${s.wafer || s.sampleNo}|${s.lotId || ''}`;
+    const current = sampleMap.get(key);
+    if (!current) {
+      const next = { ...s, sourceSampleIds: [s.id].filter(Boolean), expIds: [...(r.expIds || [])], requests: [r] };
+      sampleMap.set(key, next);
+      samples.push(next);
+    } else {
+      current.sourceSampleIds = Array.from(new Set([...(current.sourceSampleIds || []), s.id].filter(Boolean)));
+      current.expIds = Array.from(new Set([...(current.expIds || []), ...(r.expIds || [])]));
+      current.requests.push(r);
+      if (s.status === 'completed' || s.status === 'in_wip' || s.status === 'received') current.status = s.status;
+      current.raw_status = s.raw_status || current.raw_status;
+      current.rawStatus = s.rawStatus || current.rawStatus;
+    }
+  }));
+  const history = Array.from(new Map(
+    sorted.flatMap(r => (r.history || []).map(h => ({ ...h, request: r })))
+      .map(h => [`${h.action}|${h.by}|${h.at}|${h.note || ''}`, h])
+  ).values())
+    .sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')));
+  return {
+    ...first,
+    title: stripSplitSuffix(first.title),
+    displayTitle: stripSplitSuffix(first.title),
+    status: aggregateStatus(sorted),
+    rawStatus: aggregateStatus(sorted),
+    raw_status: aggregateStatus(sorted),
+    expIds: Array.from(new Set(sorted.flatMap(r => r.expIds || []))),
+    experiment_types: Array.from(
+      new Map(sorted.flatMap(r => r.experiment_types || []).map(et => [et.id, et])).values()
+    ),
+    samples,
+    sampleCount: samples.length || sorted.reduce((n, r) => n + (r.sampleCount || 0), 0),
+    history,
+    childRequests: sorted,
+  };
+};
+const groupRequests = (requests) => {
+  const map = new Map();
+  requests.forEach(r => {
+    const key = requestGroupKey(r);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(r);
+  });
+  return Array.from(map.values()).map(mergeRequests);
+};
+
+const useGroupedRequestDetail = (id) => {
+  const { data, loading, error, refresh } = useRequestDetail(id);
+  const [grouped, setGrouped] = uS(null);
+  React.useEffect(() => {
+    if (!data || !window.api?.requests) {
+      setGrouped(data);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const rows = await window.api.requests.list().catch(() => []);
+      const key = requestGroupKey(data);
+      const siblings = rows.filter(row => requestGroupKey(row) === key);
+      const details = await Promise.all(siblings.map(row =>
+        window.api.requests.get(row.id).catch(() => row)
+      ));
+      if (!cancelled) setGrouped(mergeRequests(details.length ? details : [data]));
+    })();
+    return () => { cancelled = true; };
+  }, [data?.id, data?.updated, data?.status]);
+  return { data: grouped || data, loading, error, refresh };
 };
 
 // TODO: drop once offline mode is removed — the standalone single-file demo
@@ -178,6 +277,7 @@ const REQUEST_SEED = [
 const STATUS_LABEL = {
   draft:       { label: 'Draft',       bg: '#ebebf0', fg: '#5a5a6e' },
   submitted:   { label: 'Submitted',   bg: '#fef0d4', fg: '#b8720e' },
+  waiting_sample_receive: { label: 'Waiting Samples', bg: '#fef0d4', fg: '#b8720e' },
   in_progress: { label: 'In Progress', bg: '#d4eaf0', fg: '#2a7a91' },
   returned:    { label: 'Returned',    bg: '#f9d7e0', fg: '#a73d56' },
   rejected:    { label: 'Rejected',    bg: '#fde4e4', fg: '#c0394a' },
@@ -702,10 +802,11 @@ const InProgressRow = ({ request, navigate, open, onToggle }) => {
 
 const FabDashboard = ({ navigate }) => {
   const { data: requests, loading, error } = useRequests();
-  const inProgress = requests.filter(r => r.status === 'in_progress').slice(0, 5);
-  const drafts = requests.filter(r => r.status === 'draft');
-  const attention = requests.filter(r => r.status === 'returned' || r.status === 'rejected').slice(0, 3);
-  const waitingApproval = requests.filter(r => r.status === 'submitted');
+  const groupedRequests = uM(() => groupRequests(requests), [requests]);
+  const inProgress = groupedRequests.filter(r => r.status === 'in_progress').slice(0, 5);
+  const drafts = groupedRequests.filter(r => r.status === 'draft');
+  const attention = groupedRequests.filter(r => r.status === 'returned' || r.status === 'rejected').slice(0, 3);
+  const waitingApproval = groupedRequests.filter(r => r.status === 'submitted');
   // Accordion exclusivity: only one row open at a time. `undefined` means
   // "not yet initialised" (we'll seed it with the first id once the list
   // resolves); `null` is the user-driven "collapse everything" state and
@@ -715,15 +816,23 @@ const FabDashboard = ({ navigate }) => {
     if (expandedId === undefined && inProgress.length > 0) setExpandedId(inProgress[0].id);
   }, [inProgress, expandedId]);
   const activity = uM(() => {
+    const normalizeAction = (action, request) => {
+      const a = String(action || '').toLowerCase();
+      if (a === 'cancel' || a.includes('cancelled')) return null;
+      if (a.includes('rejected')) return 'REJECT';
+      if (a.includes('returned') || a.includes('more_info')) return 'RETURN';
+      if (a.includes('completed') || request?.status === 'completed') return 'COMPLETED';
+      if (a === 'approve' || a.includes('approved') || a.includes('waiting_sample_receive')) return request?.status === 'in_progress' ? 'APPROVE_DISPATCH' : 'APPROVE';
+      if (a.includes('received') || a.includes('in_wip') || a.includes('queued') || a.includes('running') || a.includes('final_check')) return 'RECEIVE';
+      if (a.includes('submitted')) return 'SUBMIT';
+      return null;
+    };
     const items = [];
-    requests.forEach(r => {
+    groupedRequests.forEach(r => {
       r.history.forEach(h => {
-        if (h.action === 'CANCEL') return; // filter noise — shows in detail history only
-        if (h.action === 'APPROVE' && r.status === 'in_progress') {
-          items.push({ ...h, action: 'APPROVE_DISPATCH', request: r });
-        } else {
-          items.push({ ...h, request: r });
-        }
+        const action = normalizeAction(h.action, r);
+        if (!action) return;
+        items.push({ ...h, action, request: r });
       });
       // Synthesize "sample received" events for in-progress requests
       if (r.status === 'in_progress' && r.submitted) {
@@ -733,9 +842,12 @@ const FabDashboard = ({ navigate }) => {
           items.push({ action: 'RECEIVE', by: 'lab', at, sample: s, request: r });
         });
       }
+      if (r.status === 'completed' && r.updated && !r.history.some(h => String(h.action || '').toLowerCase().includes('completed'))) {
+        items.push({ action: 'COMPLETED', by: 'lab', at: r.updated, request: r });
+      }
     });
-    return items.sort((a,b) => b.at.localeCompare(a.at)).slice(0, 5);
-  }, [requests]);
+    return items.filter(a => a.at).sort((a,b) => String(b.at || '').localeCompare(String(a.at || ''))).slice(0, 5);
+  }, [groupedRequests]);
 
   if (loading && requests.length === 0) {
     return (
@@ -925,6 +1037,8 @@ const FabDashboard = ({ navigate }) => {
               RETURN:           { dot: '#c1556e', tintBg: '#fceef2', tintFg: '#a73d56', verb: 'Returned',     icon: (c) => <F.Refresh size={11} color={c} strokeWidth={2.5}/>, text: (a) => <>{a.request.title} returned for correction</> },
               REJECT:           { dot: '#d24a5d', tintBg: '#fde6e6', tintFg: '#c0394a', verb: 'Rejected',     icon: (c) => <F.X size={11} color={c} strokeWidth={3}/>,         text: (a) => <>{a.request.title} rejected</> },
               RECEIVE:          { dot: '#6c67b8', tintBg: '#ecebf7', tintFg: '#5550a0', verb: 'Received',     icon: (c) => <F.ArrowDown size={11} color={c} strokeWidth={2.5}/>, text: (a) => <><span style={{ fontFamily: 'var(--font-mono)' }}>{a.sample?.wafer || a.request.title}</span> received at lab</> },
+              COMPLETED:         { dot: '#1d4ed8', tintBg: '#dbeafe', tintFg: '#1d4ed8', verb: 'Completed',    icon: (c) => <F.CircleCheck size={12} color={c} strokeWidth={3}/>, text: (a) => <>{a.request.title} completed</> },
+              SUBMIT:            { dot: '#b8720e', tintBg: '#fef0d4', tintFg: '#b8720e', verb: 'Submitted',    icon: (c) => <F.Clock size={12} color={c} strokeWidth={2.5}/>,     text: (a) => <>{a.request.title} submitted for approval</> },
             };
             const MONTH = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
             // Group by day
@@ -1007,6 +1121,7 @@ const FabDashboard = ({ navigate }) => {
 const TABS = [
   { id: 'all',         label: 'All',         filter: (r) => r.status !== 'draft' },
   { id: 'in_progress', label: 'In Progress', filter: (r) => r.status === 'in_progress' },
+  { id: 'completed',   label: 'Completed',   filter: (r) => r.status === 'completed' },
   { id: 'returned',    label: 'Returned',    filter: (r) => r.status === 'returned' },
   { id: 'rejected',    label: 'Rejected',    filter: (r) => r.status === 'rejected' },
   { id: 'cancelled',   label: 'Cancelled',   filter: (r) => r.status === 'cancelled' },
@@ -1014,13 +1129,14 @@ const TABS = [
 
 const FabRequestList = ({ navigate, initialTab = 'all', titleOverride, drafts = false }) => {
   const { data: requests, loading, error } = useRequests();
+  const groupedRequests = uM(() => groupRequests(requests), [requests]);
   const [tab, setTab] = uS(initialTab);
   const [search, setSearch] = uS('');
   const [urgency, setUrgency] = uS('all');
   const [sort, setSort] = uS('newest');
 
-  const counts = uM(() => Object.fromEntries(TABS.map(t => [t.id, requests.filter(t.filter).length])), [requests]);
-  const baseList = drafts ? requests.filter(r => r.status === 'draft') : requests;
+  const counts = uM(() => Object.fromEntries(TABS.map(t => [t.id, groupedRequests.filter(t.filter).length])), [groupedRequests]);
+  const baseList = drafts ? groupedRequests.filter(r => r.status === 'draft') : groupedRequests;
   const tabFilter = drafts ? () => true : (TABS.find(t => t.id === tab)?.filter || (() => true));
 
   const list = uM(() => {
@@ -1030,12 +1146,12 @@ const FabRequestList = ({ navigate, initialTab = 'all', titleOverride, drafts = 
       l = l.filter(r => r.title.toLowerCase().includes(q) || String(r.id).includes(q));
     }
     if (urgency !== 'all') l = l.filter(r => r.urgency === urgency);
-    if (sort === 'newest') l = [...l].sort((a,b) => b.id - a.id);
-    if (sort === 'oldest') l = [...l].sort((a,b) => a.id - b.id);
+    if (sort === 'newest') l = [...l].sort((a,b) => String(b.created || '').localeCompare(String(a.created || '')));
+    if (sort === 'oldest') l = [...l].sort((a,b) => String(a.created || '').localeCompare(String(b.created || '')));
     return l;
   }, [baseList, tab, search, urgency, sort, drafts]);
 
-  const inProgressCount = requests.filter(r => r.status === 'in_progress').length;
+  const inProgressCount = groupedRequests.filter(r => r.status === 'in_progress').length;
   const onRowClick = (r) => navigate(
     drafts ? { page: 'fab_draft_edit', id: r.id } : { page: 'fab_request', id: r.id }
   );
@@ -1059,7 +1175,7 @@ const FabRequestList = ({ navigate, initialTab = 'all', titleOverride, drafts = 
       title={titleOverride || 'My Requests'}
       subtitle={drafts
         ? `${baseList.length} draft${baseList.length === 1 ? '' : 's'} — finish and submit`
-        : `${requests.length} total · ${inProgressCount} in progress`}
+        : `${groupedRequests.length} total · ${inProgressCount} in progress`}
       right={<PrimaryBtn icon={<F.Plus size={16}/>} onClick={() => navigate({ page: 'fab_new' })}>New Request</PrimaryBtn>}
     >
       {error && (
@@ -1181,15 +1297,17 @@ const FabRequestList = ({ navigate, initialTab = 'all', titleOverride, drafts = 
             onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'rgba(0,0,0,0.08)'; }}
           >
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: '#a8a8b8', letterSpacing: '0.02em' }}>
-              #{String(r.id).padStart(4, '0')}
+              {r.requestNo || `#${String(r.id).padStart(4, '0')}`}
             </span>
             <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>{r.title || 'Untitled draft'}</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>{r.displayTitle || r.title || 'Untitled draft'}</div>
               <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 12.5, color: 'var(--text-muted)' }}>
                 <F.Calendar size={12}/>
                 <span style={{ fontFamily: 'var(--font-mono)' }}>{r.created.split(' ')[0]}</span>
                 <span>·</span>
                 <span>{(r.sampleCount ?? r.samples.length)} wafer{(r.sampleCount ?? r.samples.length) === 1 ? '' : 's'}</span>
+                <span>·</span>
+                <span>{(r.expIds || []).length} exp</span>
               </div>
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
@@ -1352,7 +1470,13 @@ const FabNewRequest = ({ navigate, draft, isEdit = false, showToast }) => {
     setApiError(null);
     try {
       const expIdsAll = Array.from(new Set(wafers.flatMap(w => w.expIds)));
-      const samples = wafers.map(w => ({ wafer_id: w.wafer.trim(), wafer_size: w.size }));
+      const samples = wafers.map(w => ({
+        wafer_id: w.wafer.trim(),
+        wafer_size: w.size,
+        sample_name: w.wafer.trim(),
+        lot_id: title.trim() || 'LOT',
+        expIds: w.expIds,
+      }));
       const payload = {
         title: title.trim(),
         note: note.trim(),
@@ -1377,13 +1501,15 @@ const FabNewRequest = ({ navigate, draft, isEdit = false, showToast }) => {
         return;
       }
 
-      const created = await window.api.requests.create(payload);
+      const createdRequests = window.api.requests.createMany
+        ? await window.api.requests.createMany(payload)
+        : [await window.api.requests.create(payload)];
       if (publish) {
-        await window.api.requests.submit(created.id);
-        showToast && showToast(`Request #${created.id} submitted — awaiting approval`);
+        await Promise.all(createdRequests.map(req => window.api.requests.submit(req.id)));
+        showToast && showToast(`${createdRequests.length} request${createdRequests.length === 1 ? '' : 's'} submitted — awaiting approval`);
         navigate({ page: 'fab_requests' });
       } else {
-        showToast && showToast(`Draft #${created.id} saved`);
+        showToast && showToast(`${createdRequests.length} draft${createdRequests.length === 1 ? '' : 's'} saved`);
         navigate({ page: 'fab_drafts' });
       }
     } catch (err) {
@@ -1692,24 +1818,29 @@ const CancelRequestModal = ({ requestId, onClose, onCancelled, showToast }) => {
 const useSampleExperimentsForRequest = (samples) => {
   const [byId, setById] = uS({});
   const [loading, setLoading] = uS(false);
-  const ids = (samples || []).map(s => s.id).filter(v => v != null);
-  const key = ids.join(',');
+  const sampleEntries = (samples || []).map(s => ({
+    logicalId: s.id,
+    ids: (s.sourceSampleIds && s.sourceSampleIds.length ? s.sourceSampleIds : [s.id]).filter(v => v != null),
+  })).filter(e => e.logicalId != null && e.ids.length > 0);
+  const key = sampleEntries.map(e => `${e.logicalId}:${e.ids.join('|')}`).join(',');
   React.useEffect(() => {
-    if (!window.api || !window.api.samples || ids.length === 0) {
+    if (!window.api || !window.api.samples || sampleEntries.length === 0) {
       setById({});
       return;
     }
     let cancelled = false;
     setLoading(true);
-    Promise.all(ids.map(sid =>
-      window.api.samples.getExperiments(sid)
-        .then(rows => [sid, rows])
-        .catch(() => [sid, []])
+    Promise.all(sampleEntries.map(entry =>
+      Promise.all(entry.ids.map(sid =>
+        window.api.samples.getExperiments(sid).catch(() => [])
+      ))
+        .then(rowSets => [entry.logicalId, rowSets.flat()])
+        .catch(() => [entry.logicalId, []])
     ))
       .then(pairs => {
         if (cancelled) return;
         const next = {};
-        pairs.forEach(([sid, rows]) => { next[sid] = rows; });
+        pairs.forEach(([logicalId, rows]) => { next[logicalId] = rows; });
         setById(next);
       })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -1719,7 +1850,7 @@ const useSampleExperimentsForRequest = (samples) => {
 };
 
 const FabRequestDetail = ({ id, navigate, showToast }) => {
-  const { data: r, loading, error, refresh } = useRequestDetail(id);
+  const { data: r, loading, error, refresh } = useGroupedRequestDetail(id);
   const { data: liveTypes } = useExperimentTypes();
   const { byId: expsBySample } = useSampleExperimentsForRequest(r?.samples);
   const [cancelOpen, setCancelOpen] = uS(false);
@@ -1803,7 +1934,7 @@ const FabRequestDetail = ({ id, navigate, showToast }) => {
           fontSize: 13, fontWeight: 600, color: '#6c67b8', marginBottom: 14, cursor: 'pointer',
         }}><F.ChevronLeft size={14}/> My Requests</button>
       }
-      title={r.title}
+      title={r.displayTitle || r.title}
       subtitle={
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <span style={{
@@ -1822,7 +1953,7 @@ const FabRequestDetail = ({ id, navigate, showToast }) => {
       }
       right={
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
-          {r.rawStatus === 'approved' && (
+          {(r.rawStatus === 'approved' || (r.childRequests || []).some(cr => cr.rawStatus === 'approved' || cr.raw_status === 'approved')) && (
             <button onClick={onShip} disabled={shipBusy} style={{
               padding: '9px 15px', borderRadius: 8,
               background: shipBusy ? '#cbcbd6' : '#6c67b8', color: '#fff',
@@ -1937,10 +2068,11 @@ const FabRequestDetail = ({ id, navigate, showToast }) => {
             // Joined with the request's exps so we render in a stable
             // experiment-order and fall back to "pending" before the
             // per-sample fetch lands.
+            const waferExps = s.expIds?.length ? exps.filter(e => s.expIds.includes(e.id)) : exps;
             const rollup = expsBySample[s.id] || [];
             const rollupByExpId = new Map(rollup.map(row => [row.experimentTypeId, row]));
-            const total = exps.length;
-            const doneCount = exps.filter(e => rollupByExpId.get(e.id)?.status === 'done').length;
+            const total = waferExps.length;
+            const doneCount = waferExps.filter(e => rollupByExpId.get(e.id)?.status === 'done').length;
             return (
               <div key={si} style={{
                 background: '#fff', borderRadius: 12,
@@ -1959,7 +2091,7 @@ const FabRequestDetail = ({ id, navigate, showToast }) => {
                     <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4, marginLeft: 23 }}>{s.size}</div>
                   </div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    {exps.map(e => {
+                    {waferExps.map(e => {
                       const row = rollupByExpId.get(e.id);
                       const st  = row?.status || 'pending';
                       const v   = row?.verdict || null;

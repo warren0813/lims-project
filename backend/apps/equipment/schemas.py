@@ -108,6 +108,8 @@ class EquipmentOut(Schema):
     current_dispatch_id: str | None
     current_step: str
     progress: float
+    metrics: dict[str, Any]
+    wafer_count: int
     location: str
     is_active: bool
     last_heartbeat_at: datetime | None
