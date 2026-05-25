@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from apps.commissions.models import CommissionRequest, Sample
+from apps.commissions.models import CommissionRequest, Sample, SampleExperimentStatus
 
 
 def user_brief(user) -> dict[str, Any] | None:
@@ -30,7 +30,48 @@ def recipe_brief(recipe) -> dict[str, Any] | None:
     }
 
 
+def sample_experiment_out(item) -> dict[str, Any]:
+    return {
+        "id": str(item.id),
+        "experiment_type": experiment_brief(item.experiment_type),
+        "recipe": recipe_brief(item.recipe),
+        "sequence": item.sequence,
+        "status": item.status,
+        "current_wip_id": str(item.current_wip_id) if item.current_wip_id else None,
+        "started_at": item.started_at,
+        "completed_at": item.completed_at,
+    }
+
+
+def experiment_progress(experiments) -> dict[str, Any]:
+    rows = list(experiments)
+    total = len(rows)
+    completed = sum(
+        1 for item in rows if item.status == SampleExperimentStatus.COMPLETED
+    )
+    failed = sum(1 for item in rows if item.status == SampleExperimentStatus.FAILED)
+    active = sum(
+        1
+        for item in rows
+        if item.status
+        in {SampleExperimentStatus.IN_WIP, SampleExperimentStatus.RUNNING}
+    )
+    pending = max(total - completed - failed - active, 0)
+    return {
+        "total": total,
+        "completed": completed,
+        "failed": failed,
+        "active": active,
+        "pending": pending,
+        "percent": round((completed / total) * 100) if total else 0,
+        "all_done": total > 0 and completed == total,
+        "has_failed": failed > 0,
+    }
+
+
 def sample_out(sample: Sample) -> dict[str, Any]:
+    experiments = list(getattr(sample, "experiments", []).all())
+    progress = experiment_progress(experiments)
     return {
         "id": str(sample.id),
         "sample_no": sample.sample_no,
@@ -49,12 +90,30 @@ def sample_out(sample: Sample) -> dict[str, Any]:
         "current_wip_id": str(sample.current_wip_id) if sample.current_wip_id else None,
         "holding_area": sample.holding_area,
         "condition": sample.condition,
+        "experiments": [sample_experiment_out(item) for item in experiments],
+        "experiment_progress": progress,
+        "safe_to_close": progress["all_done"],
         "created_at": sample.created_at,
         "updated_at": sample.updated_at,
     }
 
 
 def request_out(req: CommissionRequest, *, include_detail: bool = True) -> dict[str, Any]:
+    samples = list(req.samples.all())
+    all_experiments = []
+    experiment_map = {}
+    for sample in samples:
+        for item in sample.experiments.all():
+            all_experiments.append(item)
+            experiment_map[str(item.experiment_type_id)] = item.experiment_type
+    if not experiment_map and req.experiment_type_id:
+        experiment_map[str(req.experiment_type_id)] = req.experiment_type
+    progress = experiment_progress(all_experiments)
+    completed_samples = sum(
+        1
+        for sample in samples
+        if experiment_progress(list(sample.experiments.all()))["all_done"]
+    )
     data = {
         "id": str(req.id),
         "request_no": req.request_no,
@@ -66,6 +125,10 @@ def request_out(req: CommissionRequest, *, include_detail: bool = True) -> dict[
         "priority": req.priority,
         "status": req.status,
         "experiment_type": experiment_brief(req.experiment_type),
+        "experiment_types": [
+            experiment_brief(experiment)
+            for experiment in sorted(experiment_map.values(), key=lambda item: item.name)
+        ],
         "preferred_recipe": recipe_brief(req.preferred_recipe),
         "material_type": req.material_type,
         "required_completion_date": req.required_completion_date,
@@ -75,6 +138,16 @@ def request_out(req: CommissionRequest, *, include_detail: bool = True) -> dict[
         "assigned_lab_user": user_brief(req.assigned_lab_user),
         "manager_comment": req.manager_comment,
         "sample_count": req.samples.count(),
+        "wafer_progress": {
+            "total": len(samples),
+            "completed": completed_samples,
+            "pending": max(len(samples) - completed_samples, 0),
+            "percent": round((completed_samples / len(samples)) * 100)
+            if samples
+            else 0,
+        },
+        "experiment_progress": progress,
+        "safe_to_close": progress["all_done"],
         "samples": [],
         "approval_records": [],
         "status_history": [],
@@ -85,7 +158,7 @@ def request_out(req: CommissionRequest, *, include_detail: bool = True) -> dict[
     if not include_detail:
         return data
 
-    data["samples"] = [sample_out(sample) for sample in req.samples.all()]
+    data["samples"] = [sample_out(sample) for sample in samples]
     data["approval_records"] = [
         {
             "reviewer": user_brief(record.reviewer),

@@ -44,6 +44,23 @@ export interface SampleRow {
   arrivedAt?: string | null
   created?: string | null
   urgency?: string
+  expIds?: ID[]
+  experiments?: SampleExperimentRow[]
+  experimentProgress?: ProgressSummary
+  safeToClose?: boolean
+}
+
+export interface SampleExperimentRow {
+  id: ID
+  experimentTypeId: ID
+  experimentTypeName: string
+  recipeId?: ID | null
+  recipeName?: string | null
+  status: string
+  sequence: number
+  currentWipId?: ID | null
+  startedAt?: string | null
+  completedAt?: string | null
 }
 
 export interface RequestRow {
@@ -65,6 +82,9 @@ export interface RequestRow {
   sampleCount: number
   expIds: ID[]
   samples: SampleRow[]
+  experimentProgress?: ProgressSummary
+  waferProgress?: WaferProgressSummary
+  safeToClose?: boolean
   history: HistoryItem[]
 }
 
@@ -85,6 +105,8 @@ export interface WipRow {
   sampleCount: number
   dispatchCount: number
   samples: SampleRow[]
+  experimentProgress?: ProgressSummary
+  safeToClose?: boolean
   status: string
   raw_status?: string
   note?: string
@@ -135,6 +157,24 @@ export interface DispatchResult {
   source?: string
 }
 
+export interface ProgressSummary {
+  total: number
+  completed: number
+  failed?: number
+  active?: number
+  pending: number
+  percent: number
+  allDone?: boolean
+  hasFailed?: boolean
+}
+
+export interface WaferProgressSummary {
+  total: number
+  completed: number
+  pending: number
+  percent: number
+}
+
 export interface EquipmentRow {
   id: ID
   name: string
@@ -176,6 +216,10 @@ export interface NotificationRow {
   body: string
   relatedEntityType: string
   relatedEntityId: string
+  relatedRequestId?: string | null
+  relatedRequestNo?: string | null
+  relatedSampleId?: string | null
+  relatedSampleNo?: string | null
   read: boolean
   createdAt: string | null
 }
@@ -330,6 +374,7 @@ function normalizeRequestPayload(payload: any) {
     ?? payload.experimentTypeId
     ?? payload.experiment_type_ids?.[0]
     ?? payload.experimentTypeIds?.[0]
+    ?? (payload.samples || []).flatMap((sample: any) => sample.expIds || sample.experimentTypeIds || sample.experiment_type_ids || [])[0]
   return {
     title: payload.title,
     description: payload.description ?? payload.note ?? '',
@@ -352,34 +397,15 @@ function normalizeRequestPayload(payload: any) {
       quantity: sample.quantity ?? 1,
       description: sample.description ?? '',
       handling_notes: sample.handling_notes ?? sample.handlingNotes ?? '',
+      experiment_type_ids: sample.experiment_type_ids ?? sample.experimentTypeIds ?? sample.expIds ?? [experimentTypeId].filter(Boolean),
     })),
   }
-}
-
-function expandRequestPayloads(payload: any) {
-  const explicitIds = payload.experiment_type_ids ?? payload.experimentTypeIds ?? []
-  const sampleIds = (payload.samples || []).flatMap((sample: any) => sample.expIds || sample.experimentTypeIds || [])
-  const experimentIds = Array.from(new Set([...explicitIds, ...sampleIds].map(String))).filter(Boolean)
-  const ids = experimentIds.length ? experimentIds : [String(normalizeRequestPayload(payload).experiment_type_id || '')].filter(Boolean)
-  return ids.map((experimentId) => {
-    const samples = (payload.samples || []).filter((sample: any) => {
-      const perSample = sample.expIds || sample.experimentTypeIds
-      return !Array.isArray(perSample) || perSample.map(String).includes(experimentId)
-    })
-    return normalizeRequestPayload({
-      ...payload,
-      title: payload.title,
-      experiment_type_id: experimentId,
-      experiment_type_ids: [experimentId],
-      preferred_recipe_id: payload.preferredRecipeByExperiment?.[experimentId] ?? payload.preferred_recipe_by_experiment?.[experimentId] ?? null,
-      samples,
-    })
-  })
 }
 
 function normalizeSampleRow(s: any): SampleRow {
   const raw = s.status || 'pending_receive'
   const mapped = SAMPLE_STATUS_MAP[raw] || raw
+  const experiments = (s.experiments || []).map(normalizeSampleExperiment)
   return {
     id: String(s.id),
     sampleNo: s.sample_no || s.sampleNo || '',
@@ -397,6 +423,82 @@ function normalizeSampleRow(s: any): SampleRow {
     receivedAt: formatTimestamp(s.received_at),
     arrivedAt: formatTimestamp(s.received_at),
     created: formatTimestamp(s.created_at),
+    expIds: experiments.map((item: SampleExperimentRow) => item.experimentTypeId),
+    experiments,
+    experimentProgress: normalizeProgress(s.experiment_progress, experiments),
+    safeToClose: Boolean(s.safe_to_close),
+  }
+}
+
+function normalizeSampleExperiment(e: any): SampleExperimentRow {
+  const experiment = e.experiment_type || {}
+  const recipe = e.recipe || {}
+  return {
+    id: String(e.id),
+    experimentTypeId: String(e.experiment_type_id ?? experiment.id ?? ''),
+    experimentTypeName: e.experiment_type_name ?? experiment.name ?? '',
+    recipeId: e.recipe_id ? String(e.recipe_id) : recipe.id ? String(recipe.id) : null,
+    recipeName: e.recipe_name ?? recipe.name ?? null,
+    status: e.status || 'pending',
+    sequence: Number(e.sequence || 0),
+    currentWipId: e.current_wip_id ? String(e.current_wip_id) : null,
+    startedAt: formatTimestamp(e.started_at),
+    completedAt: formatTimestamp(e.completed_at),
+  }
+}
+
+function normalizeSampleExperimentStatus(status: string): string {
+  if (status === 'completed') return 'done'
+  if (status === 'in_wip' || status === 'running') return 'running'
+  if (status === 'failed') return 'failed'
+  return 'pending'
+}
+
+function normalizeProgress(progress: any, experiments: SampleExperimentRow[] = []): ProgressSummary {
+  if (progress) {
+    return {
+      total: Number(progress.total || 0),
+      completed: Number(progress.completed || 0),
+      failed: Number(progress.failed || 0),
+      active: Number(progress.active || 0),
+      pending: Number(progress.pending || 0),
+      percent: Number(progress.percent || 0),
+      allDone: Boolean(progress.all_done ?? progress.allDone),
+      hasFailed: Boolean(progress.has_failed ?? progress.hasFailed),
+    }
+  }
+  const total = experiments.length
+  const completed = experiments.filter((item) => item.status === 'completed').length
+  const failed = experiments.filter((item) => item.status === 'failed').length
+  const active = experiments.filter((item) => item.status === 'in_wip' || item.status === 'running').length
+  return {
+    total,
+    completed,
+    failed,
+    active,
+    pending: Math.max(total - completed - failed - active, 0),
+    percent: total ? Math.round((completed / total) * 100) : 0,
+    allDone: total > 0 && completed === total,
+    hasFailed: failed > 0,
+  }
+}
+
+function normalizeWaferProgress(progress: any, samples: SampleRow[] = []): WaferProgressSummary {
+  if (progress) {
+    return {
+      total: Number(progress.total || 0),
+      completed: Number(progress.completed || 0),
+      pending: Number(progress.pending || 0),
+      percent: Number(progress.percent || 0),
+    }
+  }
+  const total = samples.length
+  const completed = samples.filter((sample) => sample.safeToClose).length
+  return {
+    total,
+    completed,
+    pending: Math.max(total - completed, 0),
+    percent: total ? Math.round((completed / total) * 100) : 0,
   }
 }
 
@@ -405,6 +507,7 @@ function normalizeRequestRow(r: any): RequestRow {
   const displayTitle = String(r.title || '').replace(/\s*[·•]\s*\d+\/\d+\s*$/, '').trim()
   const groupDay = formatTimestamp(r.created_at)?.slice(0, 10) || ''
   const requesterName = r.requester?.username || ''
+  const samples = (r.samples || []).map(normalizeSampleRow)
   return {
     id: String(r.id),
     requestNo: r.request_no || r.requestNo || '',
@@ -422,8 +525,11 @@ function normalizeRequestRow(r: any): RequestRow {
     submitted: formatTimestamp(r.submitted_at),
     updated: formatTimestamp(r.updated_at),
     sampleCount: r.sample_count ?? (r.samples || []).length,
-    expIds: r.experiment_type?.id ? [String(r.experiment_type.id)] : [],
-    samples: (r.samples || []).map(normalizeSampleRow),
+    expIds: (r.experiment_types?.length ? r.experiment_types : r.experiment_type ? [r.experiment_type] : []).map((e: any) => String(e.id)),
+    samples,
+    experimentProgress: normalizeProgress(r.experiment_progress, samples.flatMap((sample: SampleRow) => sample.experiments || [])),
+    waferProgress: normalizeWaferProgress(r.wafer_progress, samples),
+    safeToClose: Boolean(r.safe_to_close),
     history: (r.status_history || []).map((h: any) => ({
       action: `${h.previous_status || 'created'} → ${h.new_status}`,
       by: h.actor?.username || 'system',
@@ -437,11 +543,11 @@ function normalizeRequestDetail(r: any): RequestDetail {
   const row = normalizeRequestRow(r)
   return {
     ...row,
-    experiment_types: r.experiment_type ? [{
-      id: String(r.experiment_type.id),
-      code: r.experiment_type.code,
-      name: r.experiment_type.name,
-    }] : [],
+    experiment_types: (r.experiment_types?.length ? r.experiment_types : r.experiment_type ? [r.experiment_type] : []).map((e: any) => ({
+      id: String(e.id),
+      code: e.code,
+      name: e.name,
+    })),
     completed_at: null,
     closed_at: null,
     result: r.result,
@@ -467,6 +573,8 @@ function normalizeWip(w: any): WipRow {
     sampleCount: w.sample_count ?? samples.length,
     dispatchCount: w.dispatch_count ?? 0,
     samples,
+    experimentProgress: normalizeProgress(w.experiment_progress, samples.flatMap((sample: SampleRow) => sample.experiments || [])),
+    safeToClose: Boolean(w.safe_to_close),
     status: w.status,
     raw_status: w.status,
     note: w.note,
@@ -526,6 +634,10 @@ function normalizeNotification(n: any): NotificationRow {
     body: n.body || '',
     relatedEntityType: n.related_entity_type || '',
     relatedEntityId: n.related_entity_id || '',
+    relatedRequestId: n.related_request_id ? String(n.related_request_id) : null,
+    relatedRequestNo: n.related_request_no || null,
+    relatedSampleId: n.related_sample_id ? String(n.related_sample_id) : null,
+    relatedSampleNo: n.related_sample_no || null,
     read: Boolean(n.is_read),
     createdAt: formatTimestamp(n.created_at),
   }
@@ -632,7 +744,7 @@ const memStore: Record<string, string | null> = {}
 const store = {
   get(k: string): string | null {
     if (typeof window === 'undefined') return memStore[k] || null
-    return window.localStorage.getItem(k)
+    return window.sessionStorage.getItem(k)
   },
   set(k: string, v: string | null) {
     if (typeof window === 'undefined') {
@@ -640,8 +752,8 @@ const store = {
       else memStore[k] = v
       return
     }
-    if (v == null) window.localStorage.removeItem(k)
-    else window.localStorage.setItem(k, v)
+    if (v == null) window.sessionStorage.removeItem(k)
+    else window.sessionStorage.setItem(k, v)
   },
   clear() {
     ;['lims.access', 'lims.refresh', 'lims.user'].forEach(k => this.set(k, null))
@@ -715,6 +827,7 @@ export const api = {
   base: DEFAULT_BASE,
   realtimeBase: DEFAULT_REALTIME,
   token: () => store.get('lims.access'),
+  hasAuthSession: () => Boolean(store.get('lims.access') || store.get('lims.refresh')),
 
   auth: {
     async login(username: string, password: string): Promise<User> {
@@ -767,6 +880,9 @@ export const api = {
       return user
     },
     async me(): Promise<User> {
+      if (!api.hasAuthSession()) {
+        throw new Error('No authenticated session')
+      }
       const out = await call<any>('/auth/me')
       const user = {
         id: out.id,
@@ -938,12 +1054,7 @@ export const api = {
       return normalizeRequestDetail(await call<any>('/requests/drafts', { method: 'POST', body: JSON.stringify(normalizeRequestPayload(payload)) }))
     },
     async createMany(payload: any): Promise<RequestDetail[]> {
-      const bodies = expandRequestPayloads(payload)
-      const out = []
-      for (const body of bodies) {
-        out.push(normalizeRequestDetail(await call<any>('/requests/drafts', { method: 'POST', body: JSON.stringify(body) })))
-      }
-      return out
+      return [await api.requests.createDraft(payload)]
     },
     async createDraft(payload: any): Promise<RequestDetail> {
       return normalizeRequestDetail(await call<any>('/requests/drafts', { method: 'POST', body: JSON.stringify(normalizeRequestPayload(payload)) }))
@@ -979,6 +1090,9 @@ export const api = {
     async cancel(id: ID, reason = 'Cancelled by user'): Promise<RequestDetail> {
       return normalizeRequestDetail(await call<any>(`/requests/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) }))
     },
+    async close(id: ID, reason = 'Final review complete'): Promise<RequestDetail> {
+      return normalizeRequestDetail(await call<any>(`/requests/${id}/close`, { method: 'POST', body: JSON.stringify({ reason }) }))
+    },
   },
 
   samples: {
@@ -989,11 +1103,25 @@ export const api = {
     async get(id: ID): Promise<SampleRow> {
       return normalizeSampleRow(await call<any>(`/samples/${id}`))
     },
+    async getExperiments(id: ID): Promise<any[]> {
+      const sample = normalizeSampleRow(await call<any>(`/samples/${id}`))
+      return (sample.experiments || []).map((experiment) => ({
+        ...experiment,
+        experimentName: experiment.experimentTypeName,
+        status: normalizeSampleExperimentStatus(experiment.status),
+        verdict: experiment.status === 'failed' ? 'fail' : experiment.status === 'completed' ? 'pass' : null,
+        dispatchId: experiment.currentWipId,
+        result: null,
+      }))
+    },
     async receive(id: ID, payload: any = {}): Promise<SampleRow> {
       return normalizeSampleRow(await call<any>(`/samples/${id}/receive`, { method: 'POST', body: JSON.stringify(payload) }))
     },
     async reject(id: ID, reason: string): Promise<SampleRow> {
       return normalizeSampleRow(await call<any>(`/samples/${id}/reject`, { method: 'POST', body: JSON.stringify({ comment: reason }) }))
+    },
+    async rejectReceiving(id: ID, reason: string): Promise<SampleRow> {
+      return api.samples.reject(id, reason)
     },
   },
 
@@ -1035,6 +1163,9 @@ export const api = {
     async confirmProposal(id: ID): Promise<WipRow[]> {
       const out = await call<any[]>(`/wip/proposals/${id}/confirm`, { method: 'POST' })
       return out.map(normalizeWip)
+    },
+    async cancelProposal(id: ID): Promise<ProposalRow> {
+      return normalizeProposal(await call<any>(`/wip/proposals/${id}/cancel`, { method: 'POST' }))
     },
     async lock(id: ID): Promise<WipRow> {
       return normalizeWip(await call<any>(`/wip/${id}/lock`, { method: 'POST' }))

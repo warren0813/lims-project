@@ -12,6 +12,8 @@ from apps.commissions.models import (
     RequestStatus,
     RequestStatusHistory,
     Sample,
+    SampleExperiment,
+    SampleExperimentStatus,
     SampleStatus,
     SampleStatusHistory,
 )
@@ -68,6 +70,13 @@ def _set_sample_status(sample, status: str, actor, reason: str = "") -> None:
     )
 
 
+def _request_all_experiments_complete(req: CommissionRequest) -> bool:
+    experiments = SampleExperiment.objects.filter(sample__request=req)
+    return experiments.exists() and not experiments.exclude(
+        status=SampleExperimentStatus.COMPLETED
+    ).exists()
+
+
 def _default_recipe(experiment_type: ExperimentType) -> Recipe | None:
     return (
         Recipe.objects.filter(experiment_type=experiment_type, is_active=True)
@@ -76,14 +85,25 @@ def _default_recipe(experiment_type: ExperimentType) -> Recipe | None:
     )
 
 
+def _experiment_type_map(ids: list[str]) -> dict[str, ExperimentType]:
+    unique_ids = [item for item in dict.fromkeys(str(value) for value in ids if value)]
+    found = {
+        str(item.id): item
+        for item in ExperimentType.objects.filter(id__in=unique_ids, is_active=True)
+    }
+    missing = [item for item in unique_ids if item not in found]
+    if missing:
+        raise DomainError("One or more experiment types were not found or inactive")
+    return found
+
+
 @transaction.atomic
 def create_request(actor, payload, *, as_draft: bool) -> CommissionRequest:
-    try:
-        experiment_type = ExperimentType.objects.get(
-            id=payload.experiment_type_id, is_active=True
-        )
-    except ExperimentType.DoesNotExist as exc:
-        raise DomainError("Experiment type not found or inactive") from exc
+    request_experiment_ids = [str(payload.experiment_type_id)]
+    for sample_in in payload.samples:
+        request_experiment_ids.extend(str(item) for item in sample_in.experiment_type_ids)
+    experiment_types = _experiment_type_map(request_experiment_ids)
+    experiment_type = experiment_types[str(payload.experiment_type_id)]
 
     recipe = None
     if payload.preferred_recipe_id:
@@ -126,6 +146,10 @@ def create_request(actor, payload, *, as_draft: bool) -> CommissionRequest:
         reason="created as draft" if as_draft else "submitted",
     )
     for sample_in in payload.samples:
+        sample_experiment_ids = list(
+            dict.fromkeys(str(item) for item in sample_in.experiment_type_ids if item)
+        ) or [str(experiment_type.id)]
+        sample_experiment_types = _experiment_type_map(sample_experiment_ids)
         sample = Sample.objects.create(
             sample_no=next_business_code(Sample, "sample_no", "SMP"),
             request=req,
@@ -144,6 +168,19 @@ def create_request(actor, payload, *, as_draft: bool) -> CommissionRequest:
             actor=actor,
             reason="registered with request",
         )
+        for sequence, exp_id in enumerate(sample_experiment_ids, start=1):
+            exp_type = sample_experiment_types[exp_id]
+            SampleExperiment.objects.create(
+                sample=sample,
+                experiment_type=exp_type,
+                recipe=_default_recipe(exp_type),
+                sequence=sequence,
+                status=(
+                    SampleExperimentStatus.READY
+                    if sequence == 1
+                    else SampleExperimentStatus.PENDING
+                ),
+            )
     _audit(actor, "request.create", req)
     if not as_draft:
         notify_role(
@@ -324,6 +361,28 @@ def cancel_request(actor, req: CommissionRequest, reason: str) -> CommissionRequ
         "request.cancelled",
         f"Request {req.request_no} cancelled",
         reason,
+        related_entity=req,
+    )
+    return req
+
+
+@transaction.atomic
+def close_request(actor, req: CommissionRequest, note: str = "") -> CommissionRequest:
+    if getattr(actor.profile, "role", "") not in {"lab_manager", "admin"}:
+        raise DomainError("Permission denied", code="FORBIDDEN")
+    if req.status in TERMINAL_REQUEST_STATUSES:
+        raise DomainError("This request is already terminal")
+    if not _request_all_experiments_complete(req):
+        raise DomainError("Request still has unfinished wafer experiments")
+    _set_request_status(req, RequestStatus.COMPLETED, actor, note or "all wafer experiments complete")
+    for sample in req.samples.all():
+        _set_sample_status(sample, SampleStatus.COMPLETED, actor, "request closed")
+    _audit(actor, "request.close", req, note)
+    notify(
+        [req.requester],
+        "request.completed",
+        f"Request {req.request_no} complete",
+        note or "All wafer experiments are complete. Please review the results.",
         related_entity=req,
     )
     return req

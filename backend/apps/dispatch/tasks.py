@@ -10,7 +10,7 @@ from django.utils import timezone
 
 from apps.accounts.models import Role
 from apps.accounts.notifications import notify_role
-from apps.commissions.models import RequestStatus, SampleStatus
+from apps.commissions.models import RequestStatus, SampleExperimentStatus, SampleStatus
 from apps.dispatch.models import DispatchJob, DispatchLog, DispatchStatus
 from apps.dispatch.services import (
     dispatch_qs,
@@ -57,6 +57,10 @@ def run_dispatch_job(self, dispatch_id: str) -> dict:
             for item in dispatch.wip.items.select_related("sample", "request"):
                 item.sample.status = SampleStatus.RUNNING
                 item.sample.save(update_fields=["status", "updated_at"])
+                item.sample.experiments.filter(current_wip=dispatch.wip).update(
+                    status=SampleExperimentStatus.RUNNING,
+                    started_at=timezone.now(),
+                )
                 item.request.status = RequestStatus.RUNNING
                 item.request.save(update_fields=["status", "updated_at"])
             equipment.status = EquipmentStatus.WORKING
@@ -163,6 +167,15 @@ def run_dispatch_job(self, dispatch_id: str) -> dict:
                 equipment.save()
             dispatch.wip.status = WipStatus.FAILED
             dispatch.wip.save(update_fields=["status", "updated_at"])
+            dispatch.wip.sample_experiments.update(
+                status=SampleExperimentStatus.FAILED,
+                current_wip=None,
+                completed_at=timezone.now(),
+            )
+            for item in dispatch.wip.items.select_related("sample"):
+                item.sample.status = SampleStatus.FAILED
+                item.sample.current_wip = None
+                item.sample.save(update_fields=["status", "current_wip", "updated_at"])
         _log(dispatch, str(exc), level="error")
         notify_role(
             Role.LAB_USER,

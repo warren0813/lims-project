@@ -234,34 +234,17 @@ const mergeMgrRequests = (items) => {
   };
 };
 const groupMgrRequests = (requests) => {
-  const map = new Map();
-  requests.forEach(r => {
-    const key = mgrRequestGroupKey(r);
-    if (!map.has(key)) map.set(key, []);
-    map.get(key).push(r);
-  });
-  return Array.from(map.values()).map(mergeMgrRequests);
+  return requests.map(r => ({
+    ...r,
+    displayTitle: r.displayTitle || stripRequestSuffix(r.title),
+    sampleCount: r.sampleCount ?? r.samples?.length ?? 0,
+    childRequests: [r],
+  }));
 };
 
 const useMgrGroupedRequestDetail = (id) => {
   const { data, loading, error, refresh } = useMgrRequestDetail(id);
-  const [grouped, setGrouped] = mS(null);
-  React.useEffect(() => {
-    if (!data || !window.api?.requests) {
-      setGrouped(data);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      const rows = await window.api.requests.list().catch(() => []);
-      const key = mgrRequestGroupKey(data);
-      const siblings = rows.filter(row => mgrRequestGroupKey(row) === key);
-      const details = await Promise.all(siblings.map(row => window.api.requests.get(row.id).catch(() => row)));
-      if (!cancelled) setGrouped(mergeMgrRequests(details.length ? details : [data]));
-    })();
-    return () => { cancelled = true; };
-  }, [data?.id, data?.updated, data?.status]);
-  return { data: grouped || data, loading, error, refresh };
+  return { data: data ? { ...data, childRequests: [data] } : data, loading, error, refresh };
 };
 
 // ── Domain seeds ─────────────────────────────────────────────────
@@ -553,9 +536,19 @@ const findExpById = (id) => MGR_EXPERIMENTS.find(e => e.id === id);
 const MgrAllRequests = ({ navigate }) => {
   const { data: requests, loading, error } = useMgrRequests();
   const [tab, setTab] = mS('pending');
+  const [expanded, setExpanded] = mS(new Set());
   const groupedRequests = mM(() => groupMgrRequests(requests), [requests]);
   const counts = mM(() => Object.fromEntries(ALL_REQ_TABS.map(t => [t.id, groupedRequests.filter(t.filter).length])), [groupedRequests]);
-  const list = groupedRequests.filter(ALL_REQ_TABS.find(t => t.id === tab)?.filter || (() => true));
+  const list = groupedRequests
+    .filter(ALL_REQ_TABS.find(t => t.id === tab)?.filter || (() => true))
+    .sort((a, b) => String(b.updated || b.submitted || b.created || '').localeCompare(String(a.updated || a.submitted || a.created || '')));
+  const toggleRequest = (id) => setExpanded(prev => {
+    const next = new Set(prev);
+    const key = String(id);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    return next;
+  });
 
   if (loading && requests.length === 0) {
     return (
@@ -579,6 +572,25 @@ const MgrAllRequests = ({ navigate }) => {
           Couldn't load requests: {error}
         </div>
       )}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(120px, 1fr))', gap: 10, marginBottom: 18 }}>
+        {[
+          { id: 'pending', label: 'Pending Approval', color: '#a93445' },
+          { id: 'in_progress', label: 'In Progress', color: '#4f4a8f' },
+          { id: 'completed', label: 'Completed', color: '#157a4a' },
+          { id: 'returned', label: 'Returned', color: '#b8720e' },
+          { id: 'rejected', label: 'Rejected', color: '#8a2432' },
+        ].map(card => (
+          <button key={card.id} onClick={() => setTab(card.id)} style={{
+            textAlign: 'left', padding: '14px 16px', borderRadius: 8,
+            background: tab === card.id ? '#fbfbfd' : '#fff',
+            border: `1px solid ${tab === card.id ? card.color : mLineSft}`,
+            fontFamily: 'inherit', cursor: 'pointer',
+          }}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: card.color, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{card.label}</div>
+            <div style={{ fontFamily: 'var(--font-display)', fontSize: 26, fontWeight: 800, color: mInk, marginTop: 5 }}>{counts[card.id] || 0}</div>
+          </button>
+        ))}
+      </div>
       <div style={{ display: 'flex', gap: 22, borderBottom: `1px solid ${mLine}`, marginBottom: 22 }}>
         {ALL_REQ_TABS.map(t => {
           const active = t.id === tab;
@@ -623,58 +635,78 @@ const MgrAllRequests = ({ navigate }) => {
           // in the grid so the layout matches the detail page.
           const sampleCount = r.sampleCount ?? r.samples.length;
           const requester = r.requester?.username || r.history[0]?.by || '—';
+          const open = expanded.has(String(r.id));
           return (
-            <button key={r.id} onClick={() => navigate({ page: 'mgr_request', id: r.id })} style={{
-              display: 'grid',
-              gridTemplateColumns: '80px minmax(0,1fr) 1.3fr 110px 130px 24px',
-              alignItems: 'center', gap: 18,
-              padding: '18px 22px', borderRadius: 14,
-              background: '#fff', border: '1px solid rgba(0,0,0,0.08)',
-              textAlign: 'left', cursor: 'pointer',
-              transition: 'border-color 0.12s',
-              fontFamily: 'inherit',
-            }}
-              onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'rgba(0,0,0,0.18)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'rgba(0,0,0,0.08)'; }}
-            >
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: '#a8a8b8', letterSpacing: '0.02em' }}>
-                #{String(r.id).padStart(4, '0')}
-              </span>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 15, fontWeight: 700, color: mInk }}>{r.displayTitle || r.title}</div>
-                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 12.5, color: mMuted, flexWrap: 'wrap', whiteSpace: 'nowrap' }}>
-                  <MI.Calendar size={12}/>
-                  <span style={{ fontFamily: 'var(--font-mono)' }}>{((r.submitted || r.created) || '').split(' ')[0] || '—'}</span>
-                  <span aria-hidden>·</span>
-                  <span>{sampleCount} wafer{sampleCount === 1 ? '' : 's'}</span>
-                  <span aria-hidden>·</span>
-                  <span>{(r.expIds || []).length} exp</span>
-                  <span aria-hidden>·</span>
-                  <span>by <span style={{ fontFamily: 'var(--font-mono)', color: mText2 }}>{requester}</span></span>
+            <Card key={r.id} padding={0} style={{ overflow: 'hidden' }}>
+              <button onClick={() => toggleRequest(r.id)} style={{
+                display: 'grid', width: '100%',
+                gridTemplateColumns: '80px minmax(0,1fr) 1.3fr 110px 130px 80px 24px',
+                alignItems: 'center', gap: 18,
+                padding: '18px 22px',
+                background: '#fff', border: 'none',
+                textAlign: 'left', cursor: 'pointer',
+                fontFamily: 'inherit',
+              }}>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: '#a8a8b8', letterSpacing: '0.02em' }}>
+                  {r.requestNo || `#${String(r.id).padStart(4, '0')}`}
+                </span>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: mInk }}>{r.displayTitle || r.title}</div>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 12.5, color: mMuted, flexWrap: 'wrap', whiteSpace: 'nowrap' }}>
+                    <MI.Calendar size={12}/>
+                    <span style={{ fontFamily: 'var(--font-mono)' }}>{((r.submitted || r.created) || '').split(' ')[0] || '—'}</span>
+                    <span aria-hidden>·</span>
+                    <span>{sampleCount} wafer{sampleCount === 1 ? '' : 's'}</span>
+                    <span aria-hidden>·</span>
+                    <span>{r.experimentProgress?.completed || 0}/{r.experimentProgress?.total || 0} exp done</span>
+                    <span aria-hidden>·</span>
+                    <span>by <span style={{ fontFamily: 'var(--font-mono)', color: mText2 }}>{requester}</span></span>
+                  </div>
+                  <div style={{ marginTop: 8, height: 6, borderRadius: 999, background: '#ededf3', overflow: 'hidden', maxWidth: 340 }}>
+                    <div style={{ width: `${Math.max(0, Math.min(100, r.experimentProgress?.percent || 0))}%`, height: '100%', background: r.safeToClose ? '#157a4a' : mAccent, transition: 'width 240ms ease' }}/>
+                  </div>
                 </div>
-              </div>
-              {/* Experiment chip slot — filled when expIds are populated (offline seed only for now). */}
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {r.expIds.map(findExpById).filter(Boolean).map(e => (
-                  <span key={e.id} style={{
-                    display: 'inline-flex', alignItems: 'center', gap: 6,
-                    padding: '4px 9px 4px 4px', borderRadius: 999,
-                    background: '#f5f5fa', border: `1px solid ${mLine}`,
-                  }}>
-                    <span style={{
-                      fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 999,
-                      background: e.group === 'RA' ? '#e8e7f6' : '#d4eaf0',
-                      color: e.group === 'RA' ? '#5550a0' : '#2a7a91',
-                      letterSpacing: '0.05em',
-                    }}>{e.code}</span>
-                    <span style={{ fontSize: 12.5, color: mText2, fontWeight: 500 }}>{e.name}</span>
-                  </span>
-                ))}
-              </div>
-              <Pill kind={r.urgency} mapping={URGENCY_LABEL}/>
-              <Pill kind={r.status}/>
-              <MI.ChevronRight size={15} color="#cbcbd6"/>
-            </button>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {r.expIds.map(findExpById).filter(Boolean).map(e => (
+                    <span key={e.id} style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 6,
+                      padding: '4px 9px 4px 4px', borderRadius: 999,
+                      background: '#f5f5fa', border: `1px solid ${mLine}`,
+                    }}>
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 999,
+                        background: e.group === 'RA' ? '#e8e7f6' : '#d4eaf0',
+                        color: e.group === 'RA' ? '#5550a0' : '#2a7a91',
+                        letterSpacing: '0.05em',
+                      }}>{e.code}</span>
+                      <span style={{ fontSize: 12.5, color: mText2, fontWeight: 500 }}>{e.name}</span>
+                    </span>
+                  ))}
+                </div>
+                <Pill kind={r.urgency} mapping={URGENCY_LABEL}/>
+                <Pill kind={r.status}/>
+                <span style={{ fontSize: 12, fontWeight: 700, color: mAccent }}>{open ? 'Hide' : 'Show'}</span>
+                {open ? <MI.ChevronDown size={15} color="#cbcbd6"/> : <MI.ChevronRight size={15} color="#cbcbd6"/>}
+              </button>
+              {open && (
+                <div style={{ borderTop: `1px solid ${mLineSft}`, padding: '14px 20px', background: '#fafafd' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: 10, marginBottom: 12 }}>
+                    {(r.samples || []).map((s, i) => (
+                      <div key={`${s.id || s.wafer}-${i}`} style={{ padding: '10px 12px', borderRadius: 8, background: '#fff', border: `1px solid ${mLineSft}` }}>
+                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, fontWeight: 800, color: mInk }}>{s.wafer || s.sampleNo}</div>
+                        <div style={{ marginTop: 4, display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                          <Pill kind={s.status}/>
+                          <span style={{ fontSize: 11.5, color: mMuted }}>{(s.expIds || []).length} experiment{(s.expIds || []).length === 1 ? '' : 's'}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <PrimaryBtn icon={<MI.ArrowRight size={14}/>} onClick={() => navigate({ page: 'mgr_request', id: r.id })}>Open details</PrimaryBtn>
+                  </div>
+                </div>
+              )}
+            </Card>
           );
         })}
       </div>
@@ -800,7 +832,7 @@ const MgrRequestDetail = ({ id, navigate, showToast }) => {
     group: 'RA', // unknown without cross-fetch; default to RA palette
   }));
   const canAct = r.status === 'submitted';
-  const canComplete = r.status === 'in_progress';
+  const canComplete = Boolean(r.safeToClose);
 
   return (
     <Page
@@ -899,7 +931,16 @@ const MgrRequestDetail = ({ id, navigate, showToast }) => {
         <CardHeader>Samples · Experiments</CardHeader>
         <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 10 }}>
           {r.samples.map((s, si) => {
-            const sampleExps = s.expIds?.length ? exps.filter(e => s.expIds.includes(e.id)) : exps;
+            const sampleExps = (s.experiments || []).length
+              ? (s.experiments || []).map(row => ({
+                  id: row.id,
+                  experimentTypeId: row.experimentTypeId,
+                  name: row.experimentTypeName,
+                  code: row.experimentTypeName ? row.experimentTypeName.split(/\s+/).map(t => t[0]).join('').slice(0, 4).toUpperCase() : '—',
+                  group: 'RA',
+                  status: row.status,
+                }))
+              : (s.expIds?.length ? exps.filter(e => s.expIds.includes(e.id)) : exps);
             return (
             <button key={si} onClick={() => navigate({ page: 'lab_wafer', id: s.id })} style={{
               display: 'grid', gridTemplateColumns: '180px 1fr 20px',
@@ -921,21 +962,27 @@ const MgrRequestDetail = ({ id, navigate, showToast }) => {
                 <div style={{ fontSize: 11.5, color: mMuted, marginTop: 4, marginLeft: 23 }}>{s.size}</div>
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                {sampleExps.map(e => (
+                {sampleExps.map(e => {
+                  const done = e.status === 'completed';
+                  const active = e.status === 'running' || e.status === 'in_wip';
+                  const failed = e.status === 'failed';
+                  return (
                   <span key={e.id} style={{
                     display: 'inline-flex', alignItems: 'center', gap: 7,
                     padding: '5px 11px 5px 6px', borderRadius: 999,
-                    background: '#f5f5fa', border: `1px solid ${mLine}`,
+                    background: failed ? '#fde4e4' : done ? '#e7f6ec' : active ? '#ecebf3' : '#f5f5fa',
+                    border: `1px solid ${failed ? '#f4b4b9' : done ? '#9ad9b7' : mLine}`,
                   }}>
                     <span style={{
                       fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 999,
-                      background: e.group === 'RA' ? '#e8e7f6' : '#d4eaf0',
-                      color: e.group === 'RA' ? '#5550a0' : '#2a7a91',
+                      background: failed ? '#a93445' : done ? '#157a4a' : active ? '#4f4a8f' : (e.group === 'RA' ? '#e8e7f6' : '#d4eaf0'),
+                      color: (failed || done || active) ? '#fff' : (e.group === 'RA' ? '#5550a0' : '#2a7a91'),
                       letterSpacing: '0.05em',
                     }}>{e.code}</span>
                     <span style={{ fontSize: 13, color: mInk, fontWeight: 500 }}>{e.name}</span>
                   </span>
-                ))}
+                  );
+                })}
               </div>
               <MI.ChevronRight size={16} color={mMuted}/>
             </button>

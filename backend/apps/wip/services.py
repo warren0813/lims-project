@@ -11,6 +11,8 @@ from apps.commissions.models import (
     CommissionRequest,
     RequestStatus,
     Sample,
+    SampleExperiment,
+    SampleExperimentStatus,
     SampleStatus,
 )
 from apps.common.codes import next_business_code, priority_score
@@ -71,7 +73,7 @@ def _set_wip_status(wip: WipBatch, status: str, actor, reason: str = "") -> None
 def compatibility_key(sample: Sample, recipe: Recipe) -> str:
     return "|".join(
         [
-            str(sample.request.experiment_type_id),
+            str(recipe.experiment_type_id),
             str(recipe.id),
             recipe.equipment_type_id.hex,
             sample.material_type.lower(),
@@ -92,13 +94,72 @@ def _validate_samples(samples: list[Sample], recipe: Recipe) -> str:
     for sample in samples:
         if sample.status != SampleStatus.RECEIVED:
             raise DomainError(f"Sample {sample.sample_no} is not waiting for WIP")
-        if sample.request.status not in {
-            RequestStatus.RECEIVED,
-            RequestStatus.APPROVED,
-            RequestStatus.WAITING_SAMPLE_RECEIVE,
-        }:
+        if sample.current_wip_id:
+            raise DomainError(f"Sample {sample.sample_no} is already assigned to active WIP")
+        experiment = _next_ready_sample_experiment(sample)
+        if experiment is None:
+            raise DomainError(f"Sample {sample.sample_no} has no ready experiment")
+        if experiment.experiment_type_id != recipe.experiment_type_id:
+            raise DomainError(
+                f"Sample {sample.sample_no} is waiting for a different experiment"
+            )
+        if not _request_allows_wip(sample.request):
             raise DomainError(f"Request {sample.request.request_no} is not ready for WIP")
     return keys.pop()
+
+
+def _request_allows_wip(request: CommissionRequest) -> bool:
+    return request.status in {
+        RequestStatus.APPROVED,
+        RequestStatus.WAITING_SAMPLE_RECEIVE,
+        RequestStatus.RECEIVED,
+        RequestStatus.IN_WIP,
+        RequestStatus.QUEUED,
+        RequestStatus.RUNNING,
+        RequestStatus.FINAL_CHECK,
+    }
+
+
+def _next_ready_sample_experiment(sample: Sample) -> SampleExperiment | None:
+    existing = list(
+        sample.experiments.select_for_update(of=("self",))
+        .select_related("experiment_type")
+        .prefetch_related("recipe")
+        .order_by("sequence", "created_at")
+    )
+    if not existing and sample.request.experiment_type_id:
+        return SampleExperiment.objects.create(
+            sample=sample,
+            experiment_type=sample.request.experiment_type,
+            recipe=sample.request.preferred_recipe
+            if sample.request.preferred_recipe_id
+            and sample.request.preferred_recipe.experiment_type_id
+            == sample.request.experiment_type_id
+            else None,
+            sequence=1,
+            status=SampleExperimentStatus.READY,
+        )
+    if not existing:
+        return None
+    active_statuses = {
+        SampleExperimentStatus.IN_WIP,
+        SampleExperimentStatus.RUNNING,
+    }
+    if any(item.status in active_statuses or item.current_wip_id for item in existing):
+        return None
+    for item in existing:
+        if item.status in {
+            SampleExperimentStatus.READY,
+            SampleExperimentStatus.PENDING,
+        }:
+            return item
+        if item.status not in {
+            SampleExperimentStatus.COMPLETED,
+            SampleExperimentStatus.FAILED,
+            SampleExperimentStatus.CANCELLED,
+        }:
+            return None
+    return None
 
 
 @transaction.atomic
@@ -129,12 +190,21 @@ def create_wip(actor, sample_ids: list[str], recipe_id: str, priority: str = "no
         note=note,
     )
     for index, sample in enumerate(samples, start=1):
+        sample_experiment = _next_ready_sample_experiment(sample)
+        if sample_experiment is None:
+            raise DomainError(f"Sample {sample.sample_no} has no ready experiment")
         WipItem.objects.create(
             wip=wip, sample=sample, request=sample.request, sequence=index
         )
         sample.status = SampleStatus.IN_WIP
         sample.current_wip = wip
         sample.save(update_fields=["status", "current_wip", "updated_at"])
+        sample_experiment.status = SampleExperimentStatus.IN_WIP
+        sample_experiment.recipe = recipe
+        sample_experiment.current_wip = wip
+        sample_experiment.save(
+            update_fields=["status", "recipe", "current_wip", "updated_at"]
+        )
         if sample.request.status in {
             RequestStatus.APPROVED,
             RequestStatus.WAITING_SAMPLE_RECEIVE,
@@ -159,11 +229,16 @@ def auto_create_wip_batches(actor, max_batches: int | None = None) -> list[WipBa
     grouped: dict[str, list[Sample]] = defaultdict(list)
     recipe_by_key = {}
     for sample in samples:
-        recipe = sample.request.preferred_recipe
+        sample_experiment = _next_ready_sample_experiment(sample)
+        if sample_experiment is None:
+            continue
+        recipe = sample_experiment.recipe or sample.request.preferred_recipe
+        if recipe is not None and recipe.experiment_type_id != sample_experiment.experiment_type_id:
+            recipe = None
         if recipe is None or not recipe.is_active:
             recipe = (
                 Recipe.objects.filter(
-                    experiment_type=sample.request.experiment_type,
+                    experiment_type=sample_experiment.experiment_type,
                     is_active=True,
                 )
                 .order_by("recipe_code")
@@ -178,6 +253,7 @@ def auto_create_wip_batches(actor, max_batches: int | None = None) -> list[WipBa
     created: list[WipBatch] = []
     for key in sorted(grouped):
         recipe = recipe_by_key[key]
+        batch_size = _effective_batch_size(recipe)
         ordered = sorted(
             grouped[key],
             key=lambda sample: (
@@ -186,7 +262,7 @@ def auto_create_wip_batches(actor, max_batches: int | None = None) -> list[WipBa
                 sample.created_at,
             ),
         )
-        for start in range(0, len(ordered), recipe.max_batch_size):
+        for start in range(0, len(ordered), batch_size):
             if max_batches is not None and len(created) >= max_batches:
                 return created
             chunk = ordered[start : start + recipe.max_batch_size]
@@ -229,6 +305,10 @@ def cancel_wip(actor, wip: WipBatch, reason: str = "") -> WipBatch:
 def mark_wip_dispatched(actor, wip: WipBatch) -> None:
     _set_wip_status(wip, WipStatus.DISPATCHING, actor, "dispatch queued")
     CommissionRequest.objects.filter(wip_items__wip=wip).update(status=RequestStatus.QUEUED)
+    SampleExperiment.objects.filter(current_wip=wip).update(
+        status=SampleExperimentStatus.RUNNING,
+        started_at=timezone.now(),
+    )
 
 
 def _candidate_equipment(recipe: Recipe, reserved_ids: set[str] | None = None) -> Equipment | None:
@@ -246,6 +326,22 @@ def _candidate_equipment(recipe: Recipe, reserved_ids: set[str] | None = None) -
     )
 
 
+def _effective_batch_size(recipe: Recipe) -> int:
+    equipment_capacity = (
+        Equipment.objects.filter(
+            equipment_type=recipe.equipment_type,
+            is_active=True,
+            capability_links__recipe=recipe,
+        )
+        .order_by("-capacity")
+        .values_list("capacity", flat=True)
+        .first()
+    )
+    if not equipment_capacity:
+        return max(recipe.max_batch_size, 1)
+    return max(min(recipe.max_batch_size, equipment_capacity), 1)
+
+
 @transaction.atomic
 def auto_propose_dispatch_queue(actor, max_batches: int | None = None) -> DispatchQueueProposal:
     samples = list(
@@ -257,11 +353,16 @@ def auto_propose_dispatch_queue(actor, max_batches: int | None = None) -> Dispat
     recipe_by_key: dict[str, Recipe] = {}
     warnings: list[str] = []
     for sample in samples:
-        recipe = sample.request.preferred_recipe
+        sample_experiment = _next_ready_sample_experiment(sample)
+        if sample_experiment is None:
+            continue
+        recipe = sample_experiment.recipe or sample.request.preferred_recipe
+        if recipe is not None and recipe.experiment_type_id != sample_experiment.experiment_type_id:
+            recipe = None
         if recipe is None or not recipe.is_active:
             recipe = (
                 Recipe.objects.filter(
-                    experiment_type=sample.request.experiment_type,
+                    experiment_type=sample_experiment.experiment_type,
                     is_active=True,
                 )
                 .order_by("recipe_code")
@@ -287,6 +388,7 @@ def auto_propose_dispatch_queue(actor, max_batches: int | None = None) -> Dispat
     reserved_equipment_ids: set[str] = set()
     for key in sorted(grouped):
         recipe = recipe_by_key[key]
+        batch_size = _effective_batch_size(recipe)
         ordered = sorted(
             grouped[key],
             key=lambda sample: (
@@ -295,7 +397,7 @@ def auto_propose_dispatch_queue(actor, max_batches: int | None = None) -> Dispat
                 sample.created_at,
             ),
         )
-        for start in range(0, len(ordered), recipe.max_batch_size):
+        for start in range(0, len(ordered), batch_size):
             if max_batches is not None and order > max_batches:
                 proposal.estimated_total_runtime_sec = total_runtime
                 proposal.save(update_fields=["estimated_total_runtime_sec", "updated_at"])
@@ -315,7 +417,10 @@ def auto_propose_dispatch_queue(actor, max_batches: int | None = None) -> Dispat
                 order=order,
                 compatibility_key=key,
                 estimated_runtime_sec=recipe.estimated_runtime_sec,
-                reason="Grouped by experiment, recipe, material, priority, and batch capacity",
+                reason=(
+                    "Grouped by next ready experiment, recipe, material, priority, "
+                    f"and capacity ({len(chunk)}/{batch_size} slots)"
+                ),
                 warnings=batch_warnings,
             )
             for item_order, sample in enumerate(chunk, start=1):
@@ -377,14 +482,73 @@ def remove_proposal_item(actor, item: DispatchQueueProposalItem) -> DispatchQueu
     return proposal
 
 
+def _proposal_item_is_ready(item: DispatchQueueProposalItem) -> bool:
+    next_experiment = _next_ready_sample_experiment(item.sample)
+    return (
+        item.sample.status == SampleStatus.RECEIVED
+        and not item.sample.current_wip_id
+        and next_experiment is not None
+        and next_experiment.experiment_type_id == item.batch.experiment_type_id
+        and _request_allows_wip(item.request)
+    )
+
+
+@transaction.atomic
+def prune_proposal(actor, proposal: DispatchQueueProposal) -> DispatchQueueProposal:
+    proposal = DispatchQueueProposal.objects.select_for_update().get(pk=proposal.pk)
+    if proposal.status != DispatchQueueProposalStatus.DRAFT:
+        return proposal
+    stale_ids = []
+    for item in DispatchQueueProposalItem.objects.select_related("sample", "request").filter(batch__proposal=proposal):
+        if not _proposal_item_is_ready(item):
+            stale_ids.append(item.id)
+    if stale_ids:
+        DispatchQueueProposalItem.objects.filter(pk__in=stale_ids).delete()
+        DispatchQueueProposalBatch.objects.filter(proposal=proposal, items__isnull=True).delete()
+        proposal.estimated_total_runtime_sec = sum(
+            proposal.batches.values_list("estimated_runtime_sec", flat=True)
+        )
+        proposal.warnings = [
+            *proposal.warnings,
+            f"Removed {len(stale_ids)} stale wafer(s) that were no longer ready for WIP.",
+        ]
+        proposal.save(update_fields=["warnings", "estimated_total_runtime_sec", "updated_at"])
+        _audit(actor, "wip.proposal.prune", proposal, f"{len(stale_ids)} stale item(s)")
+    return proposal
+
+
+@transaction.atomic
+def cancel_proposal(actor, proposal: DispatchQueueProposal, reason: str = "") -> DispatchQueueProposal:
+    proposal = DispatchQueueProposal.objects.select_for_update().get(pk=proposal.pk)
+    if proposal.status != DispatchQueueProposalStatus.DRAFT:
+        raise DomainError("Only draft proposals can be cancelled")
+    proposal.status = DispatchQueueProposalStatus.CANCELLED
+    proposal.note = reason or "Cancelled before dispatch"
+    proposal.save(update_fields=["status", "note", "updated_at"])
+    _audit(actor, "wip.proposal.cancel", proposal, proposal.note)
+    return proposal
+
+
 @transaction.atomic
 def confirm_proposal(actor, proposal: DispatchQueueProposal) -> list[WipBatch]:
     proposal = DispatchQueueProposal.objects.select_for_update().get(pk=proposal.pk)
     if proposal.status != DispatchQueueProposalStatus.DRAFT:
         raise DomainError("Only draft proposals can be confirmed")
+    prune_proposal(actor, proposal)
+    proposal = DispatchQueueProposal.objects.select_for_update().get(pk=proposal.pk)
     created: list[WipBatch] = []
     dispatch_plan: list[tuple[str, str | None]] = []
-    for batch in proposal.batches.select_related("recipe").prefetch_related("items__sample"):
+    processed_batch_ids = []
+    for batch in proposal.batches.select_related("recipe", "equipment").prefetch_related("items__sample"):
+        if not batch.equipment_id or batch.equipment.status != EquipmentStatus.IDLE:
+            if batch.equipment_id and batch.equipment.status != EquipmentStatus.IDLE:
+                batch.warnings = [
+                    *batch.warnings,
+                    "Assigned equipment is no longer idle; leaving this batch planned.",
+                ]
+                batch.equipment = None
+                batch.save(update_fields=["warnings", "equipment", "updated_at"])
+            continue
         sample_ids = [str(item.sample_id) for item in batch.items.all()]
         if not sample_ids:
             continue
@@ -397,12 +561,23 @@ def confirm_proposal(actor, proposal: DispatchQueueProposal) -> list[WipBatch]:
         )
         lock_wip(actor, wip)
         created.append(wip)
-        if batch.equipment_id:
-            dispatch_plan.append((str(wip.id), str(batch.equipment_id)))
-    proposal.status = DispatchQueueProposalStatus.CONFIRMED
-    proposal.confirmed_by = actor
-    proposal.confirmed_at = timezone.now()
-    proposal.save(update_fields=["status", "confirmed_by", "confirmed_at", "updated_at"])
+        dispatch_plan.append((str(wip.id), str(batch.equipment_id)))
+        processed_batch_ids.append(batch.id)
+    if not created:
+        raise DomainError("No current WIP batches are ready to dispatch")
+    if processed_batch_ids:
+        DispatchQueueProposalBatch.objects.filter(pk__in=processed_batch_ids).delete()
+    proposal = DispatchQueueProposal.objects.select_for_update().get(pk=proposal.pk)
+    update_fields = ["note", "updated_at"]
+    if proposal.batches.exists():
+        proposal.note = "Current dispatch batches confirmed; planned batches remain queued."
+    else:
+        proposal.status = DispatchQueueProposalStatus.CONFIRMED
+        proposal.confirmed_by = actor
+        proposal.confirmed_at = timezone.now()
+        proposal.note = "All proposed batches confirmed."
+        update_fields.extend(["status", "confirmed_by", "confirmed_at"])
+    proposal.save(update_fields=update_fields)
 
     def queue_dispatches() -> None:
         from apps.dispatch.services import create_dispatch

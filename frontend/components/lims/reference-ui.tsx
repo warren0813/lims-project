@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useCallback, useEffect, useMemo, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { AuthProvider, useAuth } from "@/lib/lims/hooks"
 import { defaultRouteForRole, isRouteAllowedForRole, routeToPath } from "@/components/lims/routes/path"
@@ -73,7 +73,9 @@ function ReferenceAppContent({ initialRoute }: { initialRoute?: Route }) {
   const { user, loading, adoptUser, logout } = useAuth()
   const bundleReady = useReferenceBundle()
   const [route, setRoute] = useState<Route>(initialRoute ?? { page: "lab_dashboard" })
-  const unreadCount = useUnreadNotificationCount(Boolean(user))
+  const syncedInitialRoute = useRef("__unset__")
+  const win = typeof window !== "undefined" ? window as ReferenceWindow : undefined
+  const unreadCount = useUnreadNotificationCount(Boolean(user) && Boolean(win?.api?.hasAuthSession?.()))
 
   const navigate = useCallback((nextRoute: Route) => {
     setRoute((current) => sameRoute(current, nextRoute) ? current : nextRoute)
@@ -104,6 +106,9 @@ function ReferenceAppContent({ initialRoute }: { initialRoute?: Route }) {
       if (!loading && currentPathWithSearch() !== "/") router.replace("/")
       return
     }
+    const initialKey = routeKey(initialRoute)
+    if (initialKey === syncedInitialRoute.current) return
+    syncedInitialRoute.current = initialKey
     const nextRoute = initialRoute && isRouteAllowedForRole(initialRoute, user.role)
       ? initialRoute
       : defaultRouteForRole(user.role)
@@ -111,8 +116,6 @@ function ReferenceAppContent({ initialRoute }: { initialRoute?: Route }) {
     setRoute((current) => sameRoute(current, nextRoute) ? current : nextRoute)
     if (currentPathWithSearch() !== nextPath) router.replace(nextPath)
   }, [initialRoute, loading, router, user])
-
-  const win = typeof window !== "undefined" ? window as ReferenceWindow : undefined
 
   if (loading || !bundleReady || !win?.LoginPage || !win?.SHELL) {
     return (
@@ -280,6 +283,11 @@ function sameRoute(left: Route, right: Route): boolean {
   return left.page === right.page
     && left.id === right.id
     && left.tab === right.tab
+}
+
+function routeKey(route?: Route): string {
+  if (!route) return ""
+  return `${route.page}:${route.id ?? ""}:${route.tab ?? ""}`
 }
 
 interface RootProps {

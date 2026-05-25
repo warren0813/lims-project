@@ -132,6 +132,10 @@ class NotificationOut(Schema):
     body: str
     related_entity_type: str
     related_entity_id: str
+    related_request_id: str | None = None
+    related_request_no: str | None = None
+    related_sample_id: str | None = None
+    related_sample_no: str | None = None
     is_read: bool
     created_at: str
     read_at: str | None

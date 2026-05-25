@@ -44,7 +44,10 @@ def list_requests(
     request: HttpRequest,
     status: RequestStatus | None = Query(None),  # noqa: B008
 ):
-    qs = visible_requests(request.auth)
+    qs = visible_requests(request.auth).prefetch_related(
+        "samples__experiments__experiment_type",
+        "samples__experiments__recipe",
+    ).order_by("-updated_at", "-submitted_at", "-created_at")
     if status:
         qs = qs.filter(status=status)
     return 200, [request_out(req, include_detail=False) for req in qs]
@@ -52,7 +55,10 @@ def list_requests(
 
 @router.get("/my", response={200: list[RequestOut]})
 def list_my_requests(request: HttpRequest):
-    qs = visible_requests(request.auth).filter(requester=request.auth)
+    qs = visible_requests(request.auth).filter(requester=request.auth).prefetch_related(
+        "samples__experiments__experiment_type",
+        "samples__experiments__recipe",
+    ).order_by("-updated_at", "-submitted_at", "-created_at")
     return 200, [request_out(req, include_detail=False) for req in qs]
 
 
@@ -83,7 +89,10 @@ def create_draft_request(request: HttpRequest, payload: RequestIn):
 @router.get("/{request_id}", response={200: RequestOut, 404: ErrorOut})
 def get_request(request: HttpRequest, request_id: str):
     try:
-        req = visible_requests(request.auth).get(pk=request_id)
+        req = visible_requests(request.auth).prefetch_related(
+            "samples__experiments__experiment_type",
+            "samples__experiments__recipe",
+        ).get(pk=request_id)
     except CommissionRequest.DoesNotExist:
         return 404, {"detail": "Not found"}
     return 200, request_out(req)
@@ -220,13 +229,35 @@ def cancel_request(request: HttpRequest, request_id: str, payload: CancelIn):
     return 200, request_out(visible_requests(request.auth).get(pk=req.pk))
 
 
+@router.post(
+    "/{request_id}/close",
+    response={200: RequestOut, 400: ErrorOut, 403: ErrorOut, 404: ErrorOut},
+)
+def close_request(request: HttpRequest, request_id: str, payload: CancelIn | None = None):
+    if not has_manager_role(request):
+        return 403, {"detail": "Only lab managers can close requests"}
+    payload = payload or CancelIn(reason="")
+    try:
+        req = visible_requests(request.auth).get(pk=request_id)
+    except CommissionRequest.DoesNotExist:
+        return 404, {"detail": "Not found"}
+    try:
+        req = services.close_request(request.auth, req, payload.reason)
+    except DomainError as error:
+        return _domain_error(error)
+    return 200, request_out(visible_requests(request.auth).get(pk=req.pk))
+
+
 @sample_router.get("/", response={200: list[SampleOut]})
 def list_samples(
     request: HttpRequest,
     status: SampleStatus | None = Query(None),  # noqa: B008
     request_id: str | None = Query(None),  # noqa: B008
 ):
-    qs = visible_samples(request.auth)
+    qs = visible_samples(request.auth).prefetch_related(
+        "experiments__experiment_type",
+        "experiments__recipe",
+    ).order_by("-request__updated_at", "-request__submitted_at", "-updated_at", "-created_at")
     if status:
         qs = qs.filter(status=status)
     if request_id:
@@ -237,7 +268,10 @@ def list_samples(
 @sample_router.get("/{sample_id}", response={200: SampleOut, 404: ErrorOut})
 def get_sample(request: HttpRequest, sample_id: str):
     try:
-        sample = visible_samples(request.auth).get(pk=sample_id)
+        sample = visible_samples(request.auth).prefetch_related(
+            "experiments__experiment_type",
+            "experiments__recipe",
+        ).get(pk=sample_id)
     except Sample.DoesNotExist:
         return 404, {"detail": "Not found"}
     return 200, sample_out(sample)

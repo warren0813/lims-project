@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from apps.commissions.serializers import experiment_progress
 from apps.wip.models import DispatchQueueProposal, WipBatch
 
 
@@ -9,6 +10,7 @@ def wip_out(wip: WipBatch) -> dict[str, Any]:
     samples = []
     for item in wip.items.all():
         sample = item.sample
+        experiments = list(sample.experiments.all())
         samples.append(
             {
                 "id": str(sample.id),
@@ -18,8 +20,23 @@ def wip_out(wip: WipBatch) -> dict[str, Any]:
                 "request_no": sample.request.request_no,
                 "material_type": sample.material_type,
                 "status": sample.status,
+                "experiments": [
+                    {
+                        "id": str(exp.id),
+                        "experiment_type_id": str(exp.experiment_type_id),
+                        "experiment_type_name": exp.experiment_type.name,
+                        "recipe_id": str(exp.recipe_id) if exp.recipe_id else None,
+                        "status": exp.status,
+                        "sequence": exp.sequence,
+                        "current_wip_id": str(exp.current_wip_id) if exp.current_wip_id else None,
+                    }
+                    for exp in experiments
+                ],
+                "experiment_progress": experiment_progress(experiments),
+                "safe_to_close": experiment_progress(experiments)["all_done"],
             }
         )
+    all_experiments = [exp for sample in samples for exp in sample["experiments"]]
     return {
         "id": str(wip.id),
         "wip_no": wip.wip_no,
@@ -38,6 +55,26 @@ def wip_out(wip: WipBatch) -> dict[str, Any]:
         "completed_at": wip.completed_at,
         "note": wip.note,
         "samples": samples,
+        "experiment_progress": {
+            "total": len(all_experiments),
+            "completed": sum(1 for exp in all_experiments if exp["status"] == "completed"),
+            "failed": sum(1 for exp in all_experiments if exp["status"] == "failed"),
+            "active": sum(1 for exp in all_experiments if exp["status"] in {"in_wip", "running"}),
+            "pending": sum(1 for exp in all_experiments if exp["status"] in {"pending", "ready"}),
+            "percent": round(
+                (
+                    sum(1 for exp in all_experiments if exp["status"] == "completed")
+                    / len(all_experiments)
+                )
+                * 100
+            )
+            if all_experiments
+            else 0,
+            "all_done": bool(all_experiments)
+            and all(exp["status"] == "completed" for exp in all_experiments),
+        },
+        "safe_to_close": bool(all_experiments)
+        and all(exp["status"] == "completed" for exp in all_experiments),
         "dispatch_count": wip.dispatches.count(),
         "created_at": wip.created_at,
         "updated_at": wip.updated_at,

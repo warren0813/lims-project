@@ -30,7 +30,12 @@ router = Router(tags=["WIP"], auth=JWTAuth())
 def _qs():
     return (
         WipBatch.objects.select_related("experiment_type", "recipe", "equipment_type")
-        .prefetch_related("items__sample__request", "dispatches")
+        .prefetch_related(
+            "items__sample__request",
+            "items__sample__experiments__experiment_type",
+            "items__sample__experiments__recipe",
+            "dispatches",
+        )
         .order_by("-created_at")
     )
 
@@ -115,6 +120,8 @@ def auto_propose_wip(request: HttpRequest, payload: AutoWipIn | None = None):
 def list_proposals(request: HttpRequest):
     if not has_lab_role(request):
         return 403, {"detail": "Permission denied"}
+    for proposal in list(_proposal_qs().filter(status="draft")[:50]):
+        services.prune_proposal(request.auth, proposal)
     return 200, [proposal_out(item) for item in _proposal_qs()[:50]]
 
 
@@ -126,7 +133,26 @@ def get_proposal(request: HttpRequest, proposal_id: str):
         proposal = _proposal_qs().get(pk=proposal_id)
     except DispatchQueueProposal.DoesNotExist:
         return 404, {"detail": "Proposal not found"}
-    return 200, proposal_out(proposal)
+    proposal = services.prune_proposal(request.auth, proposal)
+    return 200, proposal_out(_proposal_qs().get(pk=proposal.pk))
+
+
+@router.post(
+    "/proposals/{proposal_id}/cancel",
+    response={200: ProposalOut, 400: ErrorOut, 403: ErrorOut, 404: ErrorOut},
+)
+def cancel_proposal(request: HttpRequest, proposal_id: str):
+    if not has_lab_role(request):
+        return 403, {"detail": "Permission denied"}
+    try:
+        proposal = DispatchQueueProposal.objects.get(pk=proposal_id)
+    except DispatchQueueProposal.DoesNotExist:
+        return 404, {"detail": "Proposal not found"}
+    try:
+        proposal = services.cancel_proposal(request.auth, proposal)
+    except DomainError as error:
+        return _err(error)
+    return 200, proposal_out(_proposal_qs().get(pk=proposal.pk))
 
 
 @router.patch(

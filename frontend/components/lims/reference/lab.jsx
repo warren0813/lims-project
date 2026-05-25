@@ -296,8 +296,8 @@ const useLabDispatches = () => {
   // Join name fields onto each dispatch row.
   const enriched = dispatches.map(d => ({
     ...d,
-    experimentName: expById.get(d.experimentId)?.name || null,
-    equipmentName: eqById.get(d.equipmentId)?.name || null,
+    experimentName: expById.get(d.experimentId)?.name || d.experimentName || '—',
+    equipmentName: eqById.get(d.equipmentId)?.name || d.equipmentName || '—',
   }));
   return { dispatches: enriched, loading, error, refresh };
 };
@@ -416,6 +416,11 @@ const useWaferDetail = (id) => {
     const cleanup = refresh();
     return cleanup;
   }, [refresh]);
+  React.useEffect(() => {
+    if (id == null) return;
+    const h = setInterval(refresh, 3000);
+    return () => clearInterval(h);
+  }, [id, refresh]);
   return { data, loading, error, refresh };
 };
 
@@ -506,6 +511,13 @@ const useLabSamples = () => {
   const wafers = samples.map(s => ({
     ...s,
     urgency: requestsById.get(s.requestId)?.urgency || '1w',
+    requestTitle: requestsById.get(s.requestId)?.displayTitle || requestsById.get(s.requestId)?.title || s.requestNo || `Request ${s.requestId}`,
+    requestNo: requestsById.get(s.requestId)?.requestNo || s.requestNo || `#${String(s.requestId || '').padStart(4, '0')}`,
+    requestStatus: requestsById.get(s.requestId)?.status || '',
+    requestUpdated: requestsById.get(s.requestId)?.updated || requestsById.get(s.requestId)?.submitted || requestsById.get(s.requestId)?.created || s.created || '',
+    requestProgress: requestsById.get(s.requestId)?.experimentProgress || null,
+    requestSafeToClose: requestsById.get(s.requestId)?.safeToClose || false,
+    requester: requestsById.get(s.requestId)?.requester?.username || '',
   }));
   return { wafers, loading, error, refresh };
 };
@@ -1256,6 +1268,7 @@ const LabSamples = ({ navigate, defaultTab = 'all', showToast }) => {
   const [tab, setTab] = lS(defaultTab);
   const [busyIds, setBusyIds] = lS(new Set());
   const [actionError, setActionError] = lS(null);
+  const [expandedRequests, setExpandedRequests] = lS(new Set());
 
   const runAction = async (id, op, label) => {
     setBusyIds(prev => new Set(prev).add(id));
@@ -1293,6 +1306,48 @@ const LabSamples = ({ navigate, defaultTab = 'all', showToast }) => {
     { id: 'rejected',  label: 'Rejected',  count: wafers.filter(w => w.status === 'rejected').length },
   ];
   const list = tab === 'all' ? wafers : wafers.filter(w => w.status === tab);
+  const requestGroups = React.useMemo(() => {
+    const map = new Map();
+    list.forEach(w => {
+      const key = w.requestId || w.requestNo || w.requestTitle || w.wafer;
+      if (!map.has(key)) {
+        map.set(key, {
+          id: key,
+          requestId: w.requestId,
+          requestNo: w.requestNo,
+          title: w.requestTitle,
+          status: w.requestStatus,
+          updated: w.requestUpdated,
+          progress: w.requestProgress,
+          safeToClose: w.requestSafeToClose,
+          requester: w.requester,
+          wafers: [],
+        });
+      }
+      map.get(key).wafers.push(w);
+    });
+    return Array.from(map.values()).sort((a, b) =>
+      String(b.updated || '').localeCompare(String(a.updated || ''))
+      || String(a.requestNo || '').localeCompare(String(b.requestNo || ''))
+    );
+  }, [list]);
+  React.useEffect(() => {
+    setExpandedRequests(prev => {
+      const valid = new Set(requestGroups.map(g => String(g.id)));
+      const next = new Set(Array.from(prev).filter(id => valid.has(id)));
+      if (next.size === 0 && requestGroups[0]) next.add(String(requestGroups[0].id));
+      return next;
+    });
+  }, [requestGroups]);
+  const toggleGroup = (id) => {
+    const key = String(id);
+    setExpandedRequests(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   if (loading && wafers.length === 0) {
     return (
@@ -1341,77 +1396,135 @@ const LabSamples = ({ navigate, defaultTab = 'all', showToast }) => {
       </div>
 
       <div style={{ fontSize: 13, color: muted, marginBottom: 14 }}>
-        Showing <strong style={{ color: ink }}>{list.length}</strong> of {wafers.length} wafer{wafers.length === 1 ? '' : 's'}
+        Showing <strong style={{ color: ink }}>{requestGroups.length}</strong> request{requestGroups.length === 1 ? '' : 's'} · {list.length} wafer{list.length === 1 ? '' : 's'}
       </div>
 
-      {/* Card-row list — same chrome as fab's My Requests */}
+      {/* Request-grouped collapsible list */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {list.length === 0 ? (
+        {requestGroups.length === 0 ? (
           <Card padding={48} style={{ textAlign: 'center', color: muted }}>
             <LF.Inbox size={32} color="#cbcbd6" style={{ marginBottom: 10 }}/>
             <div style={{ fontSize: 14, fontWeight: 600, color: text2 }}>No wafers in this view</div>
           </Card>
-        ) : list.map(w => {
-          const remaining = computeRemaining(w);
-          const fmt = formatRemaining(remaining);
-          const style = REMAINING_STYLE[fmt.level];
-          const showDot = fmt.level === 'overdue' || fmt.level === 'critical';
-          const busy = busyIds.has(w.id);
+        ) : requestGroups.map(group => {
+          const open = expandedRequests.has(String(group.id));
+          const counts = group.wafers.reduce((acc, w) => {
+            acc[w.status] = (acc[w.status] || 0) + 1;
+            return acc;
+          }, {});
+          const expTotal = group.progress?.total ?? group.wafers.reduce((n, w) => n + (w.experimentProgress?.total || (w.experiments || []).length || 0), 0);
+          const expDone = group.progress?.completed ?? group.wafers.reduce((n, w) => n + (w.experimentProgress?.completed || 0), 0);
+          const expPct = expTotal ? Math.round((expDone / expTotal) * 100) : 0;
           return (
-            <button key={w.id} onClick={() => navigate({ page: 'lab_wafer', id: w.id })} style={{
-              display: 'grid',
-              gridTemplateColumns: '110px minmax(0,1fr) 150px 130px 150px 24px',
-              alignItems: 'center', gap: 18,
-              padding: '18px 22px', borderRadius: 14,
-              background: style.rowBg,
-              border: `1px solid ${fmt.level === 'overdue' ? '#f1b9c0' : 'rgba(0,0,0,0.08)'}`,
-              textAlign: 'left', cursor: 'pointer',
-              transition: 'border-color 0.12s, background 0.12s',
-              fontFamily: 'inherit',
-            }}
-              onMouseEnter={(e) => { e.currentTarget.style.borderColor = fmt.level === 'overdue' ? '#e88a93' : 'rgba(0,0,0,0.18)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.borderColor = fmt.level === 'overdue' ? '#f1b9c0' : 'rgba(0,0,0,0.08)'; }}
-            >
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                {showDot && <span title="Past or near deadline" style={{ width: 6, height: 6, borderRadius: 999, background: '#c0394a', flexShrink: 0 }}/>}
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13.5, fontWeight: 700, color: ink, letterSpacing: '0.02em' }}>{w.wafer}</span>
-              </span>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 14, fontWeight: 600, color: ink }}>
-                  {w.size} <span style={{ color: muted, fontWeight: 500 }}>· #{String(w.requestId).padStart(4,'0')}</span>
+            <Card key={group.id} padding={0} style={{ overflow: 'hidden' }}>
+              <button onClick={() => toggleGroup(group.id)} style={{
+                width: '100%', display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto auto 24px',
+                alignItems: 'center', gap: 16, padding: '16px 20px',
+                background: '#fff', border: 'none', cursor: 'pointer',
+                textAlign: 'left', fontFamily: 'inherit',
+              }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: muted, background: '#f1f1f5', padding: '3px 8px', borderRadius: 6 }}>{group.requestNo}</span>
+                    <span style={{ fontSize: 15.5, fontWeight: 800, color: ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{group.title}</span>
+                    {group.safeToClose && <span style={{ fontSize: 11, fontWeight: 800, color: '#157a4a', background: '#e7f6ec', padding: '3px 8px', borderRadius: 999 }}>Ready for final review</span>}
+                  </div>
+                  <div style={{ marginTop: 5, fontSize: 12, color: muted, display: 'inline-flex', gap: 8, flexWrap: 'wrap' }}>
+                    <span>{group.wafers.length} wafer{group.wafers.length === 1 ? '' : 's'}</span>
+                    <span>{expDone}/{expTotal} experiments completed</span>
+                    {Object.entries(counts).map(([status, count]) => <span key={status}>{count} {status.replace('_', ' ')}</span>)}
+                    {group.requester && <span>by {group.requester}</span>}
+                  </div>
+                  <div style={{ marginTop: 8, height: 6, borderRadius: 999, background: '#ededf3', overflow: 'hidden', maxWidth: 380 }}>
+                    <div style={{ width: `${expPct}%`, height: '100%', background: group.safeToClose ? '#157a4a' : '#6c67b8', transition: 'width 240ms ease' }}/>
+                  </div>
                 </div>
-                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 12.5, color: muted }}>
-                  <LF.Calendar size={12}/>
-                  <span style={{ fontFamily: 'var(--font-mono)' }}>{w.arrivedAt || '—'}</span>
-                  <span>·</span>
-                  <span>{(URGENCY_DAYS[w.urgency] === 3 ? '3-day' : URGENCY_DAYS[w.urgency] === 7 ? '1-week' : '2-week')} window</span>
-                </div>
-              </div>
-              <div>
-                <span style={{
-                  display: 'inline-flex', alignItems: 'center', gap: 6,
-                  padding: '4px 11px', borderRadius: 999,
-                  background: style.bg, color: style.fg,
-                  fontSize: 12, fontWeight: 700, letterSpacing: '0.02em', whiteSpace: 'nowrap',
-                }}>
-                  {fmt.level !== 'none' && <LF.Clock size={11} color={style.fg}/>}
-                  {fmt.text}
+                {group.status && <Pill kind={group.status}/>}
+                <span style={{ fontSize: 12, color: text2, fontWeight: 700 }}>
+                  {open ? 'Hide wafers' : 'Show wafers'}
                 </span>
-              </div>
-              <div><Pill kind={w.status}/></div>
-              <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}
-                onClick={(e) => e.stopPropagation()}>
-                {w.status === 'incoming' ? (
-                  <>
-                    <SecondaryBtn onClick={() => handleReceive(w)} disabled={busy} style={{ padding: '5px 10px', fontSize: 12 }}>{busy ? '…' : 'Receive'}</SecondaryBtn>
-                    <SecondaryBtn danger onClick={() => handleReject(w)} disabled={busy} style={{ padding: '5px 10px', fontSize: 12 }}>{busy ? '…' : 'Reject'}</SecondaryBtn>
-                  </>
-                ) : (
-                  <span style={{ fontSize: 12, color: muted }}>—</span>
-                )}
-              </div>
-              <LF.ChevronRight size={15} color="#cbcbd6"/>
-            </button>
+                {open ? <LF.ChevronDown size={16} color={muted}/> : <LF.ChevronRight size={16} color={muted}/>}
+              </button>
+              {open && (
+                <div style={{ borderTop: `1px solid ${lineSoft}`, display: 'flex', flexDirection: 'column' }}>
+                  {group.wafers.map(w => {
+                    const remaining = computeRemaining(w);
+                    const fmt = formatRemaining(remaining);
+                    const style = REMAINING_STYLE[fmt.level];
+                    const showDot = fmt.level === 'overdue' || fmt.level === 'critical';
+                    const busy = busyIds.has(w.id);
+                    return (
+                      <button key={w.id} onClick={() => navigate({ page: 'lab_wafer', id: w.id })} style={{
+                        display: 'grid',
+                        gridTemplateColumns: '110px minmax(0,1fr) 150px 130px 150px 24px',
+                        alignItems: 'center', gap: 18,
+                        padding: '14px 20px',
+                        background: style.rowBg,
+                        border: 'none',
+                        borderTop: `1px solid ${lineSoft}`,
+                        textAlign: 'left', cursor: 'pointer',
+                        fontFamily: 'inherit',
+                      }}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                          {showDot && <span title="Past or near deadline" style={{ width: 6, height: 6, borderRadius: 999, background: '#c0394a', flexShrink: 0 }}/>}
+                          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13.5, fontWeight: 700, color: ink, letterSpacing: '0.02em' }}>{w.wafer}</span>
+                        </span>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 14, fontWeight: 600, color: ink }}>{w.size}</div>
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 12.5, color: muted, flexWrap: 'wrap' }}>
+                            <LF.Calendar size={12}/>
+                            <span style={{ fontFamily: 'var(--font-mono)' }}>{w.arrivedAt || '—'}</span>
+                            <span>·</span>
+                            <span>{(URGENCY_DAYS[w.urgency] === 3 ? '3-day' : URGENCY_DAYS[w.urgency] === 7 ? '1-week' : '2-week')} window</span>
+                            <span>·</span>
+                            <span>{w.experimentProgress?.completed || 0}/{w.experimentProgress?.total || (w.experiments || []).length} exp done</span>
+                          </div>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 8 }}>
+                            {(w.experiments || []).map(exp => {
+                              const st = exp.status;
+                              const done = st === 'completed';
+                              const active = st === 'running' || st === 'in_wip';
+                              const failed = st === 'failed';
+                              return (
+                                <span key={exp.id} style={{
+                                  fontSize: 11.5, fontWeight: 700, padding: '3px 7px', borderRadius: 999,
+                                  background: failed ? '#fde4e4' : done ? '#e7f6ec' : active ? '#ecebf3' : '#f4f4f7',
+                                  color: failed ? '#a93445' : done ? '#157a4a' : active ? '#4f4a8f' : '#777788',
+                                  border: `1px solid ${failed ? '#f4b4b9' : done ? '#9ad9b7' : 'rgba(0,0,0,0.08)'}`,
+                                }}>{exp.experimentTypeName}</span>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        <div>
+                          <span style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 6,
+                            padding: '4px 11px', borderRadius: 999,
+                            background: style.bg, color: style.fg,
+                            fontSize: 12, fontWeight: 700, letterSpacing: '0.02em', whiteSpace: 'nowrap',
+                          }}>
+                            {fmt.level !== 'none' && <LF.Clock size={11} color={style.fg}/>}
+                            {fmt.text}
+                          </span>
+                        </div>
+                        <div><Pill kind={w.status}/></div>
+                        <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }} onClick={(e) => e.stopPropagation()}>
+                          {w.status === 'incoming' ? (
+                            <>
+                              <SecondaryBtn onClick={() => handleReceive(w)} disabled={busy} style={{ padding: '5px 10px', fontSize: 12 }}>{busy ? '…' : 'Receive'}</SecondaryBtn>
+                              <SecondaryBtn danger onClick={() => handleReject(w)} disabled={busy} style={{ padding: '5px 10px', fontSize: 12 }}>{busy ? '…' : 'Reject'}</SecondaryBtn>
+                            </>
+                          ) : (
+                            <span style={{ fontSize: 12, color: muted }}>—</span>
+                          )}
+                        </div>
+                        <LF.ChevronRight size={15} color="#cbcbd6"/>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </Card>
           );
         })}
       </div>
@@ -1666,6 +1779,66 @@ const LabWaferDetail = ({ id, navigate, showToast }) => {
   );
 };
 
+const WipProposalItemsByRequest = ({ items }) => {
+  const [openIds, setOpenIds] = lS(new Set());
+  const groups = React.useMemo(() => {
+    const map = new Map();
+    items.forEach(item => {
+      const key = item.requestId || item.requestNo;
+      if (!map.has(key)) map.set(key, { id: key, requestNo: item.requestNo, fabUser: item.fabUser, priority: item.priority, items: [] });
+      map.get(key).items.push(item);
+    });
+    return Array.from(map.values());
+  }, [items]);
+  React.useEffect(() => {
+    setOpenIds(prev => {
+      if (prev.size || !groups[0]) return prev;
+      return new Set([String(groups[0].id)]);
+    });
+  }, [groups]);
+  const toggle = (id) => setOpenIds(prev => {
+    const next = new Set(prev);
+    const key = String(id);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    return next;
+  });
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 12 }}>
+      {groups.map(group => {
+        const open = openIds.has(String(group.id));
+        return (
+          <div key={group.id} style={{ border: `1px solid ${lineSoft}`, borderRadius: 8, overflow: 'hidden', background: '#fbfbfd' }}>
+            <button onClick={() => toggle(group.id)} style={{
+              width: '100%', display: 'grid', gridTemplateColumns: '1fr auto 18px',
+              gap: 10, alignItems: 'center', padding: '9px 10px',
+              background: '#fbfbfd', border: 'none', cursor: 'pointer',
+              textAlign: 'left', fontFamily: 'inherit',
+            }}>
+              <span style={{ minWidth: 0 }}>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, fontWeight: 800, color: ink }}>{group.requestNo}</span>
+                <span style={{ marginLeft: 8, fontSize: 11.5, color: muted }}>{group.fabUser} · {group.priority}</span>
+              </span>
+              <span style={{ fontSize: 11.5, color: text2, fontWeight: 700 }}>{group.items.length} wafer{group.items.length === 1 ? '' : 's'}</span>
+              {open ? <LF.ChevronDown size={14} color={muted}/> : <LF.ChevronRight size={14} color={muted}/>}
+            </button>
+            {open && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 8, padding: 10, borderTop: `1px solid ${lineSoft}` }}>
+                {group.items.map(item => (
+                  <div key={item.id} style={{ padding: '8px 9px', borderRadius: 7, border: `1px solid ${lineSoft}`, background: '#fff' }}>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, fontWeight: 700, color: ink }}>{item.sampleNo}</div>
+                    <div style={{ fontSize: 11.5, color: muted, marginTop: 2 }}>{item.sampleStatus || 'ready'}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
 const WipProposalBatchCard = ({ batch, planned = false }) => (
   <div style={{
     border: `1px solid ${planned ? '#f0d7a8' : line}`, borderRadius: 8, overflow: 'hidden',
@@ -1713,23 +1886,11 @@ const WipProposalBatchCard = ({ batch, planned = false }) => (
         {batch.warnings.join(' · ')}
       </div>
     )}
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 8, padding: 12 }}>
-      {batch.items.map(item => (
-        <div key={item.id} style={{
-          padding: '9px 10px', borderRadius: 8,
-          border: `1px solid ${lineSoft}`, background: '#fbfbfd',
-        }}>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, fontWeight: 700, color: ink }}>{item.sampleNo}</div>
-          <div style={{ fontSize: 11.5, color: muted, marginTop: 2 }}>
-            {item.requestNo} · {item.fabUser} · {item.priority}
-          </div>
-        </div>
-      ))}
-    </div>
+    <WipProposalItemsByRequest items={batch.items}/>
   </div>
 );
 
-const WipProposalQueue = ({ proposals, loading, confirmingId, onConfirm }) => {
+const WipProposalQueue = ({ proposals, loading, confirmingId, cancelingId, onConfirm, onCancel }) => {
   if (loading && proposals.length === 0) return null;
   if (!proposals.length) return null;
   return (
@@ -1743,8 +1904,8 @@ const WipProposalQueue = ({ proposals, loading, confirmingId, onConfirm }) => {
       <div style={{ display: 'flex', flexDirection: 'column' }}>
         {proposals.map(proposal => (
           <div key={proposal.id} style={{ padding: '16px 20px', borderTop: `1px solid ${lineSoft}` }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 12 }}>
-              <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 12 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 800, color: ink }}>{proposal.proposalNo}</span>
                   <Pill kind={proposal.status}/>
@@ -1758,13 +1919,23 @@ const WipProposalQueue = ({ proposals, loading, confirmingId, onConfirm }) => {
                   </div>
                 )}
               </div>
-              <PrimaryBtn
-                icon={<LF.Check size={14}/>}
-                disabled={confirmingId === proposal.id || proposal.batches.length === 0}
-                onClick={() => onConfirm(proposal)}
-              >
-                {confirmingId === proposal.id ? 'Confirming…' : 'Confirm & Dispatch'}
-              </PrimaryBtn>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexShrink: 0 }}>
+                <SecondaryBtn
+                  danger
+                  icon={<LF.X size={14}/>}
+                  disabled={cancelingId === proposal.id || confirmingId === proposal.id}
+                  onClick={() => onCancel(proposal)}
+                >
+                  {cancelingId === proposal.id ? 'Cancelling…' : 'Cancel'}
+                </SecondaryBtn>
+                <PrimaryBtn
+                  icon={<LF.Check size={14}/>}
+                  disabled={confirmingId === proposal.id || proposal.batches.length === 0}
+                  onClick={() => onConfirm(proposal)}
+                >
+                  {confirmingId === proposal.id ? 'Confirming…' : 'Confirm & Dispatch'}
+                </PrimaryBtn>
+              </div>
             </div>
             {(() => {
               const current = proposal.batches.filter(batch => batch.equipmentId);
@@ -1821,6 +1992,7 @@ const LabWipList = ({ navigate, showToast }) => {
   const [modalOpen, setModalOpen] = lS(false);
   const [autoBusy, setAutoBusy] = lS(false);
   const [confirmingId, setConfirmingId] = lS(null);
+  const [cancelingId, setCancelingId] = lS(null);
   const [queueError, setQueueError] = lS(null);
   // Active = anything not yet terminal (created + in_progress).
   // Completed = terminal states (completed + aborted).
@@ -1882,6 +2054,19 @@ const LabWipList = ({ navigate, showToast }) => {
       setConfirmingId(null);
     }
   };
+  const onCancelProposal = async (proposal) => {
+    setCancelingId(proposal.id);
+    setQueueError(null);
+    try {
+      await window.api.wips.cancelProposal(proposal.id);
+      showToast && showToast(`${proposal.proposalNo} cancelled`);
+      await Promise.all([refreshProposals(), refreshAutoWipWafers()]);
+    } catch (e) {
+      setQueueError(e.message || String(e));
+    } finally {
+      setCancelingId(null);
+    }
+  };
 
   if (loading && wips.length === 0) {
     return (
@@ -1917,7 +2102,9 @@ const LabWipList = ({ navigate, showToast }) => {
         proposals={proposals}
         loading={proposalsLoading}
         confirmingId={confirmingId}
+        cancelingId={cancelingId}
         onConfirm={onConfirmProposal}
+        onCancel={onCancelProposal}
       />
       <div style={{ display: 'flex', gap: 4, marginBottom: 14, borderBottom: `1px solid ${line}` }}>
         {[
@@ -1959,10 +2146,12 @@ const LabWipList = ({ navigate, showToast }) => {
           // legacy seed-shaped rows that might still come through.
           const expName = w.experimentName || findExp(w.experimentId)?.name || '—';
           const expCode = (findExp(w.experimentId)?.code) || (w.experimentName ? w.experimentName.split(/\s+/).map(t => t[0]).join('').slice(0, 4).toUpperCase() : '—');
+          const progress = w.experimentProgress || { completed: 0, total: 0, percent: 0 };
+          const requestNos = Array.from(new Set((w.samples || []).map(s => s.requestNo).filter(Boolean)));
           return (
             <button key={w.id} onClick={() => navigate({ page: 'lab_wip_detail', id: w.id })} style={{
               display: 'grid',
-              gridTemplateColumns: '110px minmax(0,1fr) 130px 80px 100px 140px 24px',
+              gridTemplateColumns: '110px minmax(0,1fr) 110px 80px 90px 120px 120px 24px',
               alignItems: 'center', gap: 18,
               padding: '18px 22px', borderRadius: 14,
               background: '#fff', border: '1px solid rgba(0,0,0,0.08)',
@@ -1982,7 +2171,10 @@ const LabWipList = ({ navigate, showToast }) => {
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 14.5, fontWeight: 700, color: ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{expName}</div>
                   <div style={{ fontSize: 12, color: muted, marginTop: 3 }}>
-                    {w.note ? w.note : (w.created ? `created ${w.created.split(' ')[0]}` : '')}
+                    {requestNos.length ? requestNos.join(', ') : (w.note ? w.note : (w.created ? `created ${w.created.split(' ')[0]}` : ''))}
+                  </div>
+                  <div style={{ marginTop: 8, height: 6, borderRadius: 999, background: '#ededf3', overflow: 'hidden', maxWidth: 320 }}>
+                    <div style={{ width: `${progress.percent || 0}%`, height: '100%', background: w.safeToClose ? '#157a4a' : accent, transition: 'width 240ms ease' }}/>
                   </div>
                 </div>
               </div>
@@ -1995,6 +2187,9 @@ const LabWipList = ({ navigate, showToast }) => {
               <span style={{ fontSize: 13, fontWeight: 600, color: text2 }}>
                 <LF.Dispatch size={12} color={muted} style={{ verticalAlign: '-2px', marginRight: 4 }}/>
                 {w.dispatchCount ?? (Array.isArray(w.dispatchIds) ? w.dispatchIds.length : 0)}
+              </span>
+              <span style={{ fontSize: 12.5, color: w.safeToClose ? '#157a4a' : text2, fontWeight: 800 }}>
+                {w.safeToClose ? 'Safe to close' : `${progress.completed || 0}/${progress.total || 0} exp`}
               </span>
               <span><Pill kind={w.status} dotted={w.status === 'in_progress'}/></span>
               <LF.ChevronRight size={15} color="#cbcbd6"/>
@@ -2617,6 +2812,24 @@ const LabDispatchList = ({ navigate, defaultTab = 'active' }) => {
   const filtered = groups[tab] === null
     ? dispatches
     : dispatches.filter(d => groups[tab].includes(d.status));
+  const equipmentGroups = React.useMemo(() => {
+    const map = new Map();
+    filtered.forEach(d => {
+      const key = d.equipmentId || 'unassigned';
+      if (!map.has(key)) {
+        map.set(key, {
+          id: key,
+          equipmentName: d.equipmentName || (key === 'unassigned' ? 'Unassigned equipment' : key),
+          status: d.status === 'running' ? 'running' : d.status,
+          dispatches: [],
+        });
+      }
+      const group = map.get(key);
+      group.dispatches.push(d);
+      if (d.status === 'running') group.status = 'running';
+    });
+    return Array.from(map.values()).sort((a, b) => String(a.equipmentName).localeCompare(String(b.equipmentName)));
+  }, [filtered]);
   // 1Hz tick so the per-row running countdown advances visibly. Same
   // pattern as LabDispatchDetail — only mount the interval when there's
   // a running row in the current view, and clear it as soon as there
@@ -2678,84 +2891,75 @@ const LabDispatchList = ({ navigate, defaultTab = 'active' }) => {
       </div>
 
       <div style={{ fontSize: 13, color: muted, marginBottom: 14 }}>
-        Showing <strong style={{ color: ink }}>{filtered.length}</strong> of {dispatches.length} dispatch{dispatches.length === 1 ? '' : 'es'}
+        Showing <strong style={{ color: ink }}>{equipmentGroups.length}</strong> equipment group{equipmentGroups.length === 1 ? '' : 's'} · {filtered.length} dispatch{filtered.length === 1 ? '' : 'es'}
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {filtered.length === 0 ? (
           <Card padding={48} style={{ textAlign: 'center', color: muted }}>
             <LF.Activity size={32} color="#cbcbd6" style={{ marginBottom: 10 }}/>
             <div style={{ fontSize: 14, fontWeight: 600, color: text2 }}>No dispatches</div>
           </Card>
-        ) : filtered.map(d => {
-          const pct = clampPct(d.progress);
-          const live = ['dispatched', 'pending', 'running'].includes(d.status);
-          // Experiment chip uses initials when the local string-slug catalogue
-          // can't match the integer id (same pattern as Lab WIP list).
-          const expCode = (findExp(d.experimentId)?.code) || (d.experimentName ? d.experimentName.split(/\s+/).map(t => t[0]).join('').slice(0, 4).toUpperCase() : '—');
+        ) : equipmentGroups.map(group => {
+          const running = group.dispatches.find(d => d.status === 'running') || group.dispatches[0];
+          const groupPct = Math.max(...group.dispatches.map(d => clampPct(d.progress || 0)), 0);
           return (
-            <button key={d.id} onClick={() => navigate({ page: 'lab_dispatch_detail', id: d.id })} style={{
-              display: 'block', width: '100%',
-              padding: '18px 22px', borderRadius: 14,
-              background: '#fff', border: '1px solid rgba(0,0,0,0.08)',
-              textAlign: 'left', cursor: 'pointer',
-              transition: 'border-color 0.12s',
-              fontFamily: 'inherit',
-            }}
-              onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'rgba(0,0,0,0.18)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'rgba(0,0,0,0.08)'; }}
-            >
+            <Card key={group.id} padding={0} style={{ overflow: 'hidden' }}>
               <div style={{
                 display: 'grid',
-                gridTemplateColumns: '100px minmax(0,1fr) 120px 120px 80px 130px 24px',
-                alignItems: 'center', gap: 14,
+                gridTemplateColumns: 'minmax(0,1fr) 140px 140px 160px',
+                gap: 16, alignItems: 'center',
+                padding: '16px 20px', background: '#fbfbfd', borderBottom: `1px solid ${lineSoft}`,
               }}>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13.5, fontWeight: 700, color: ink, letterSpacing: '0.02em' }}>{d.code}</span>
-                <div style={{ minWidth: 0, display: 'inline-flex', alignItems: 'center', gap: 10 }}>
-                  <span style={{
-                    fontSize: 10.5, fontWeight: 700, padding: '3px 8px', borderRadius: 999,
-                    background: '#ecebf3', color: '#4f4a8f', letterSpacing: '0.05em', flexShrink: 0,
-                  }}>{expCode}</span>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 14.5, fontWeight: 700, color: ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.experimentName || '—'}</div>
-                    <div style={{ fontSize: 12, color: muted, marginTop: 3, fontFamily: 'var(--font-mono)' }}>{`WIP-${String(d.wipId).padStart(4,'0')}`}</div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                    <LF.Activity size={15} color={group.status === 'running' ? '#4f4a8f' : muted}/>
+                    <span style={{ fontSize: 15, fontWeight: 800, color: ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{group.equipmentName}</span>
+                    <Pill kind={group.status}/>
+                  </div>
+                  <div style={{ marginTop: 6, fontSize: 12, color: muted }}>
+                    Current: <span style={{ fontFamily: 'var(--font-mono)', color: text2 }}>{running?.code || '—'}</span> · {group.dispatches.length} dispatch{group.dispatches.length === 1 ? '' : 'es'}
                   </div>
                 </div>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: text2, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  <LF.User size={12} color={muted}/>
-                  {d.operator || '—'}
+                <span style={{ fontSize: 12.5, color: text2, fontWeight: 700 }}>{running?.experimentName || '—'}</span>
+                <span style={{ fontSize: 12.5, color: text2 }}>{running?.waferCount || 0} wafer{(running?.waferCount || 0) === 1 ? '' : 's'} assigned</span>
+                <span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, color: muted, marginBottom: 5 }}>
+                    <span>{running?.currentStep || 'Progress'}</span>
+                    <span style={{ fontFamily: 'var(--font-mono)', color: accent }}>{Math.round(groupPct)}%</span>
+                  </div>
+                  <ProgressBar value={groupPct} height={7} color="linear-gradient(90deg, #f4a8bf, #6c67b8)" track="#f1eef9"/>
                 </span>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: text2 }}>{d.equipmentName || '—'}</span>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: text2 }} title="Estimated duration">{window.UI.formatDuration(d.estimatedDurationSeconds)}</span>
-                <span><Pill kind={d.status} dotted={d.status === 'running'}/></span>
-                <LF.ChevronRight size={15} color="#cbcbd6"/>
               </div>
-              {live && (
-                <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${lineSoft}` }}>
-                  <div style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    fontSize: 11.5, color: text2, fontWeight: 600, marginBottom: 6,
-                  }}>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                      <span style={{
-                        width: 6, height: 6, borderRadius: 999, background: '#f4a8bf',
-                        animation: d.status === 'running' ? 'pulse 1.4s ease-in-out infinite' : 'none',
-                      }}/>
-                      {d.currentStep || PILL[d.status]?.label || d.status}
-                      <span style={{ color: muted }}>·</span>
-                      <span style={{ color: muted }}>{d.waferCount || 0} wafer{(d.waferCount || 0) === 1 ? '' : 's'}</span>
-                    </span>
-                    <span style={{ fontFamily: 'var(--font-mono)', color: accent }}>{Math.round(pct)}%</span>
-                  </div>
-                  <ProgressBar value={pct} height={7} color="linear-gradient(90deg, #f4a8bf, #6c67b8)" track="#f1eef9"/>
-                  {d.metrics && Object.keys(d.metrics).length > 0 && (
-                    <div style={{ marginTop: 10 }}>
-                      <MetricsGrid metrics={d.metrics} limit={4}/>
-                    </div>
-                  )}
-                </div>
-              )}
-            </button>
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                {group.dispatches.map(d => {
+                  const pct = clampPct(d.progress);
+                  const expCode = (findExp(d.experimentId)?.code) || (d.experimentName ? d.experimentName.split(/\s+/).map(t => t[0]).join('').slice(0, 4).toUpperCase() : '—');
+                  return (
+                    <button key={d.id} onClick={() => navigate({ page: 'lab_dispatch_detail', id: d.id })} style={{
+                      display: 'grid',
+                      gridTemplateColumns: '110px minmax(0,1fr) 130px 90px 140px 24px',
+                      alignItems: 'center', gap: 14,
+                      padding: '13px 20px',
+                      background: '#fff', border: 'none', borderTop: `1px solid ${lineSoft}`,
+                      textAlign: 'left', cursor: 'pointer', fontFamily: 'inherit',
+                    }}>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 800, color: ink }}>{d.code}</span>
+                      <span style={{ minWidth: 0, display: 'inline-flex', alignItems: 'center', gap: 9 }}>
+                        <span style={{ fontSize: 10.5, fontWeight: 800, padding: '3px 8px', borderRadius: 999, background: '#ecebf3', color: '#4f4a8f' }}>{expCode}</span>
+                        <span style={{ fontSize: 13.5, fontWeight: 700, color: ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.experimentName || '—'}</span>
+                      </span>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: text2 }}>{d.wipNo || `WIP-${String(d.wipId).padStart(4,'0')}`}</span>
+                      <span style={{ fontSize: 12.5, color: text2 }}>{d.waferCount || 0} wafers</span>
+                      <span>
+                        <ProgressBar value={pct} height={6} color="linear-gradient(90deg, #f4a8bf, #6c67b8)" track="#f1eef9"/>
+                      </span>
+                      <LF.ChevronRight size={15} color="#cbcbd6"/>
+                    </button>
+                  );
+                })}
+              </div>
+            </Card>
           );
         })}
       </div>

@@ -170,36 +170,17 @@ const mergeRequests = (items) => {
   };
 };
 const groupRequests = (requests) => {
-  const map = new Map();
-  requests.forEach(r => {
-    const key = requestGroupKey(r);
-    if (!map.has(key)) map.set(key, []);
-    map.get(key).push(r);
-  });
-  return Array.from(map.values()).map(mergeRequests);
+  return requests.map(r => ({
+    ...r,
+    displayTitle: r.displayTitle || stripSplitSuffix(r.title),
+    sampleCount: r.sampleCount ?? r.samples?.length ?? 0,
+    childRequests: [r],
+  }));
 };
 
 const useGroupedRequestDetail = (id) => {
   const { data, loading, error, refresh } = useRequestDetail(id);
-  const [grouped, setGrouped] = uS(null);
-  React.useEffect(() => {
-    if (!data || !window.api?.requests) {
-      setGrouped(data);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      const rows = await window.api.requests.list().catch(() => []);
-      const key = requestGroupKey(data);
-      const siblings = rows.filter(row => requestGroupKey(row) === key);
-      const details = await Promise.all(siblings.map(row =>
-        window.api.requests.get(row.id).catch(() => row)
-      ));
-      if (!cancelled) setGrouped(mergeRequests(details.length ? details : [data]));
-    })();
-    return () => { cancelled = true; };
-  }, [data?.id, data?.updated, data?.status]);
-  return { data: grouped || data, loading, error, refresh };
+  return { data: data ? { ...data, childRequests: [data] } : data, loading, error, refresh };
 };
 
 // TODO: drop once offline mode is removed — the standalone single-file demo
@@ -767,25 +748,20 @@ const InProgressRow = ({ request, navigate, open, onToggle }) => {
             </div>
           )}
           {wafers.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              {wafers.map((w, i) => {
-                const idx = phaseIndexFor(w, detail || request);
-                return (
-                  <div key={w.id ?? i} style={{
-                    display: 'grid', gridTemplateColumns: '160px 1fr',
-                    alignItems: 'center', gap: 18,
-                    padding: '12px 16px',
-                    background: '#fff', borderRadius: 10,
-                    border: '1px solid rgba(0,0,0,0.06)',
-                  }}>
-                    <div>
-                      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>{w.wafer}</div>
-                      <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>{w.size}</div>
-                    </div>
-                    <PhasePipeline idx={idx}/>
-                  </div>
-                );
-              })}
+            <div style={{
+              display: 'grid', gridTemplateColumns: '160px 1fr',
+              alignItems: 'center', gap: 18,
+              padding: '12px 16px',
+              background: '#fff', borderRadius: 10,
+              border: '1px solid rgba(0,0,0,0.06)',
+            }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>Aggregate status</div>
+                <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>
+                  {wafers.length} wafer{wafers.length === 1 ? '' : 's'}
+                </div>
+              </div>
+              <PhasePipeline idx={overallIdx}/>
             </div>
           )}
           <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end' }}>
@@ -1134,6 +1110,7 @@ const FabRequestList = ({ navigate, initialTab = 'all', titleOverride, drafts = 
   const [search, setSearch] = uS('');
   const [urgency, setUrgency] = uS('all');
   const [sort, setSort] = uS('newest');
+  const [expanded, setExpanded] = uS(new Set());
 
   const counts = uM(() => Object.fromEntries(TABS.map(t => [t.id, groupedRequests.filter(t.filter).length])), [groupedRequests]);
   const baseList = drafts ? groupedRequests.filter(r => r.status === 'draft') : groupedRequests;
@@ -1152,9 +1129,16 @@ const FabRequestList = ({ navigate, initialTab = 'all', titleOverride, drafts = 
   }, [baseList, tab, search, urgency, sort, drafts]);
 
   const inProgressCount = groupedRequests.filter(r => r.status === 'in_progress').length;
-  const onRowClick = (r) => navigate(
+  const onOpenRequest = (r) => navigate(
     drafts ? { page: 'fab_draft_edit', id: r.id } : { page: 'fab_request', id: r.id }
   );
+  const toggleRequest = (id) => setExpanded(prev => {
+    const next = new Set(prev);
+    const key = String(id);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    return next;
+  });
 
   if (loading && requests.length === 0) {
     return (
@@ -1280,56 +1264,79 @@ const FabRequestList = ({ navigate, initialTab = 'all', titleOverride, drafts = 
             <F.ClipboardList size={32} color="#cbcbd6" style={{ marginBottom: 10 }}/>
             <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-secondary)' }}>No requests match these filters</div>
           </FabCard>
-        ) : list.map(r => (
-          <button key={r.id} onClick={() => onRowClick(r)} style={{
-            display: 'grid',
-            // drafts only show flow indicator; full list shows urgency + status pills too
-            gridTemplateColumns: drafts
-              ? '72px minmax(0,1fr) 180px 24px'
-              : '72px minmax(0,1fr) 140px 110px 130px 24px',
-            alignItems: 'center', gap: 18,
-            padding: '18px 22px', borderRadius: 14,
-            background: '#fff', border: '1px solid rgba(0,0,0,0.08)',
-            textAlign: 'left', cursor: 'pointer', transition: 'border 0.12s, background 0.12s',
-            fontFamily: 'inherit',
-          }}
-            onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'rgba(0,0,0,0.18)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'rgba(0,0,0,0.08)'; }}
-          >
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: '#a8a8b8', letterSpacing: '0.02em' }}>
-              {r.requestNo || `#${String(r.id).padStart(4, '0')}`}
-            </span>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>{r.displayTitle || r.title || 'Untitled draft'}</div>
-              <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 12.5, color: 'var(--text-muted)' }}>
-                <F.Calendar size={12}/>
-                <span style={{ fontFamily: 'var(--font-mono)' }}>{r.created.split(' ')[0]}</span>
-                <span>·</span>
-                <span>{(r.sampleCount ?? r.samples.length)} wafer{(r.sampleCount ?? r.samples.length) === 1 ? '' : 's'}</span>
-                <span>·</span>
-                <span>{(r.expIds || []).length} exp</span>
+        ) : list.map(r => {
+          const open = expanded.has(String(r.id));
+          return (
+          <FabCard key={r.id} padding={0} style={{ overflow: 'hidden' }}>
+            <button onClick={() => toggleRequest(r.id)} style={{
+              display: 'grid', width: '100%',
+              gridTemplateColumns: drafts
+                ? '72px minmax(0,1fr) 180px 80px 24px'
+                : '72px minmax(0,1fr) 140px 110px 130px 80px 24px',
+              alignItems: 'center', gap: 18,
+              padding: '18px 22px',
+              background: '#fff', border: 'none',
+              textAlign: 'left', cursor: 'pointer',
+              fontFamily: 'inherit',
+            }}>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: '#a8a8b8', letterSpacing: '0.02em' }}>
+                {r.requestNo || `#${String(r.id).padStart(4, '0')}`}
+              </span>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>{r.displayTitle || r.title || 'Untitled draft'}</div>
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 12.5, color: 'var(--text-muted)' }}>
+                  <F.Calendar size={12}/>
+                  <span style={{ fontFamily: 'var(--font-mono)' }}>{(r.created || '').split(' ')[0]}</span>
+                  <span>·</span>
+                  <span>{(r.sampleCount ?? r.samples.length)} wafer{(r.sampleCount ?? r.samples.length) === 1 ? '' : 's'}</span>
+                  <span>·</span>
+                  <span>{r.experimentProgress?.completed || 0}/{r.experimentProgress?.total || 0} exp done</span>
+                </div>
+                <div style={{ marginTop: 8, maxWidth: 320 }}>
+                  <div style={{ height: 6, borderRadius: 999, background: '#ededf3', overflow: 'hidden' }}>
+                    <div style={{
+                      width: `${Math.max(0, Math.min(100, r.experimentProgress?.percent || 0))}%`,
+                      height: '100%',
+                      background: r.safeToClose ? '#157a4a' : '#6c67b8',
+                      transition: 'width 240ms ease',
+                    }}/>
+                  </div>
+                </div>
               </div>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
-              {drafts
-                ? <span style={{ fontSize: 12.5, fontWeight: 600, color: '#6c67b8', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                    <F.FilePlus size={13}/> Continue editing
-                  </span>
-                : <RequestFlow request={r}/>}
-            </div>
-            {!drafts && (
               <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
-                <UrgencyPill urgency={r.urgency} size="md"/>
+                {drafts
+                  ? <span style={{ fontSize: 12.5, fontWeight: 600, color: '#6c67b8', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <F.FilePlus size={13}/> Continue editing
+                    </span>
+                  : <RequestFlow request={r}/>}
+              </div>
+              {!drafts && <div style={{ display: 'flex', justifyContent: 'flex-start' }}><UrgencyPill urgency={r.urgency} size="md"/></div>}
+              {!drafts && <div style={{ display: 'flex', justifyContent: 'flex-start' }}><StatusPill status={r.status} size="md"/></div>}
+              <span style={{ fontSize: 12, fontWeight: 700, color: '#6c67b8' }}>{open ? 'Hide' : 'Show'}</span>
+              {open ? <F.ChevronDown size={15} color="#cbcbd6"/> : <F.ChevronRight size={15} color="#cbcbd6"/>}
+            </button>
+            {open && (
+              <div style={{ borderTop: '1px solid rgba(0,0,0,0.06)', padding: '14px 20px', background: '#fafafd' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: 10, marginBottom: 12 }}>
+                  {(r.samples || []).map((s, i) => (
+                    <div key={`${s.id || s.wafer}-${i}`} style={{ padding: '10px 12px', borderRadius: 8, background: '#fff', border: '1px solid rgba(0,0,0,0.07)' }}>
+                      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, fontWeight: 800, color: 'var(--text-primary)' }}>{s.wafer || s.sampleNo}</div>
+                      <div style={{ marginTop: 4, display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <SamplePill status={s.status}/>
+                        <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{s.experimentProgress?.completed || 0}/{s.experimentProgress?.total || (s.expIds || []).length} experiments done</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <PrimaryBtn icon={<F.ArrowRight size={14}/>} onClick={() => onOpenRequest(r)}>
+                    {drafts ? 'Continue' : 'Open details'}
+                  </PrimaryBtn>
+                </div>
               </div>
             )}
-            {!drafts && (
-              <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
-                <StatusPill status={r.status} size="md"/>
-              </div>
-            )}
-            <F.ChevronRight size={15} color="#cbcbd6"/>
-          </button>
-        ))}
+          </FabCard>
+        )})}
       </div>
     </FabPage>
   );
@@ -1849,6 +1856,13 @@ const useSampleExperimentsForRequest = (samples) => {
   return { byId, loading };
 };
 
+const displayExperimentStatus = (status) => {
+  if (status === 'done' || status === 'completed') return 'done';
+  if (status === 'in_wip' || status === 'running') return 'running';
+  if (status === 'failed') return 'failed';
+  return 'pending';
+};
+
 const FabRequestDetail = ({ id, navigate, showToast }) => {
   const { data: r, loading, error, refresh } = useGroupedRequestDetail(id);
   const { data: liveTypes } = useExperimentTypes();
@@ -1921,9 +1935,9 @@ const FabRequestDetail = ({ id, navigate, showToast }) => {
   };
   const metrics = [
     { label: 'Wafers',      value: r.samples.length },
-    { label: 'Experiments', value: exps.length },
+    { label: 'Experiments', value: `${r.experimentProgress?.completed || 0}/${r.experimentProgress?.total || 0}` },
     { label: 'Submitted',   value: r.submitted ? r.submitted.split(' ')[0] : '—' },
-    { label: 'Completed',   value: completedAt || stateMap[r.status] || '—' },
+    { label: 'Review',      value: r.safeToClose ? 'Ready' : (completedAt || stateMap[r.status] || '—') },
   ];
 
   return (
@@ -2064,15 +2078,18 @@ const FabRequestDetail = ({ id, navigate, showToast }) => {
         </PlainCardHeader>
         <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 12, background: '#fafafd' }}>
           {r.samples.map((s, si) => {
-            // Wafer-side rollup from /samples/:id/experiments (gap §2.8).
-            // Joined with the request's exps so we render in a stable
-            // experiment-order and fall back to "pending" before the
-            // per-sample fetch lands.
-            const waferExps = s.expIds?.length ? exps.filter(e => s.expIds.includes(e.id)) : exps;
+            const waferExps = (s.experiments || []).length
+              ? (s.experiments || []).map(row => ({
+                  id: row.experimentTypeId,
+                  name: row.experimentTypeName,
+                  group: labCategoryById.get(row.experimentTypeId) || '',
+                  status: row.status,
+                }))
+              : (s.expIds?.length ? exps.filter(e => s.expIds.includes(e.id)) : exps);
             const rollup = expsBySample[s.id] || [];
             const rollupByExpId = new Map(rollup.map(row => [row.experimentTypeId, row]));
             const total = waferExps.length;
-            const doneCount = waferExps.filter(e => rollupByExpId.get(e.id)?.status === 'done').length;
+            const doneCount = s.experimentProgress?.completed ?? waferExps.filter(e => rollupByExpId.get(e.id)?.status === 'done').length;
             return (
               <div key={si} style={{
                 background: '#fff', borderRadius: 12,
@@ -2093,32 +2110,34 @@ const FabRequestDetail = ({ id, navigate, showToast }) => {
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                     {waferExps.map(e => {
                       const row = rollupByExpId.get(e.id);
-                      const st  = row?.status || 'pending';
+                      const st  = displayExperimentStatus(row?.status || e.status);
                       const v   = row?.verdict || null;
                       const done = st === 'done';
-                      const pass = done && v === 'pass';
-                      const fail = done && v === 'fail';
+                      const fail = st === 'failed' || (done && v === 'fail');
+                      const running = st === 'running';
                       return (
                         <span key={e.id} style={{
                           display: 'inline-flex', alignItems: 'center', gap: 7,
                           padding: '6px 12px 6px 7px', borderRadius: 999,
-                          background: fail ? '#fde4e4' : done ? '#e7f6ec' : '#f4f4f7',
-                          border: `1px solid ${fail ? '#f4b4b9' : done ? '#9ad9b7' : 'rgba(0,0,0,0.08)'}`,
+                          background: fail ? '#fde4e4' : done ? '#e7f6ec' : running ? '#ecebf3' : '#f4f4f7',
+                          border: `1px solid ${fail ? '#f4b4b9' : done ? '#9ad9b7' : running ? '#bcb8e2' : 'rgba(0,0,0,0.08)'}`,
                         }}>
                           <span style={{
                             fontSize: 10, fontWeight: 700, padding: '3px 7px', borderRadius: 999,
-                            background: fail ? '#a93445' : done ? '#157a4a' : '#cbcbd6',
+                            background: fail ? '#a93445' : done ? '#157a4a' : running ? '#4f4a8f' : '#cbcbd6',
                             color: '#fff', letterSpacing: '0.05em',
                           }}>{e.group}</span>
                           <span style={{
                             fontSize: 13, fontWeight: 500,
-                            color: fail ? '#5a1a22' : done ? '#1f3d2c' : '#a8a8b8',
+                            color: fail ? '#5a1a22' : done ? '#1f3d2c' : running ? '#29284d' : '#a8a8b8',
                           }}>{e.name}</span>
                           {fail
                             ? <F.X size={13} color="#a93445" strokeWidth={3}/>
                             : done
                               ? <F.Check size={13} color="#157a4a" strokeWidth={3}/>
-                              : <span style={{ width: 13, height: 13, borderRadius: 999, border: '1.5px dashed #cbcbd6' }}/>}
+                              : running
+                                ? <span style={{ width: 9, height: 9, borderRadius: 999, background: '#4f4a8f', animation: 'pulse 1.4s infinite' }}/>
+                                : <span style={{ width: 13, height: 13, borderRadius: 999, border: '1.5px dashed #cbcbd6' }}/>}
                         </span>
                       );
                     })}

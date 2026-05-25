@@ -14,6 +14,7 @@ class SampleIn(Schema):
     quantity: int = Field(1, ge=1)
     description: str = ""
     handling_notes: str = ""
+    experiment_type_ids: list[str] = []
 
 
 class RequestIn(Schema):
@@ -102,6 +103,35 @@ class RecipeBriefOut(Schema):
     name: str
 
 
+class SampleExperimentOut(Schema):
+    id: str
+    experiment_type: ExperimentBriefOut
+    recipe: RecipeBriefOut | None
+    sequence: int
+    status: str
+    current_wip_id: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+
+
+class ExperimentProgressOut(Schema):
+    total: int
+    completed: int
+    failed: int | None = 0
+    active: int | None = 0
+    pending: int
+    percent: int
+    all_done: bool | None = False
+    has_failed: bool | None = False
+
+
+class WaferProgressOut(Schema):
+    total: int
+    completed: int
+    pending: int
+    percent: int
+
+
 class SampleOut(Schema):
     id: str
     sample_no: str
@@ -120,6 +150,9 @@ class SampleOut(Schema):
     current_wip_id: str | None
     holding_area: str
     condition: str
+    experiments: list[SampleExperimentOut] = []
+    experiment_progress: ExperimentProgressOut | None = None
+    safe_to_close: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -150,6 +183,7 @@ class RequestOut(Schema):
     priority: str
     status: str
     experiment_type: ExperimentBriefOut
+    experiment_types: list[ExperimentBriefOut] = []
     preferred_recipe: RecipeBriefOut | None
     material_type: str
     required_completion_date: date | None
@@ -159,6 +193,9 @@ class RequestOut(Schema):
     assigned_lab_user: UserBriefOut | None
     manager_comment: str
     sample_count: int
+    wafer_progress: WaferProgressOut | None = None
+    experiment_progress: ExperimentProgressOut | None = None
+    safe_to_close: bool = False
     samples: list[SampleOut] = []
     approval_records: list[ApprovalRecordOut] = []
     status_history: list[StatusHistoryOut] = []

@@ -256,6 +256,35 @@ def reset_password_placeholder(request: HttpRequest, user_id: int):
 
 
 def _notification_out(item: Notification) -> dict:
+    related_request_id = None
+    related_request_no = None
+    related_sample_id = None
+    related_sample_no = None
+    if item.related_entity_type == "CommissionRequest" and item.related_entity_id:
+        from apps.commissions.models import CommissionRequest
+
+        request_obj = (
+            CommissionRequest.objects.filter(pk=item.related_entity_id)
+            .only("id", "request_no")
+            .first()
+        )
+        if request_obj:
+            related_request_id = str(request_obj.id)
+            related_request_no = request_obj.request_no
+    elif item.related_entity_type == "Sample" and item.related_entity_id:
+        from apps.commissions.models import Sample
+
+        sample = (
+            Sample.objects.select_related("request")
+            .filter(pk=item.related_entity_id)
+            .only("id", "sample_no", "request__id", "request__request_no")
+            .first()
+        )
+        if sample:
+            related_sample_id = str(sample.id)
+            related_sample_no = sample.sample_no
+            related_request_id = str(sample.request_id)
+            related_request_no = sample.request.request_no
     return {
         "id": item.pk,
         "notification_type": item.notification_type,
@@ -263,6 +292,10 @@ def _notification_out(item: Notification) -> dict:
         "body": item.body,
         "related_entity_type": item.related_entity_type,
         "related_entity_id": item.related_entity_id,
+        "related_request_id": related_request_id,
+        "related_request_no": related_request_no,
+        "related_sample_id": related_sample_id,
+        "related_sample_no": related_sample_no,
         "is_read": item.is_read,
         "created_at": item.created_at.isoformat(),
         "read_at": item.read_at.isoformat() if item.read_at else None,

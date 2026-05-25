@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import re
+
 from django.db import transaction
 from django.utils import timezone
 
 from apps.accounts.models import AuditLog, Role
 from apps.accounts.notifications import notify, notify_role
 from apps.commissions.models import RequestStatus, SampleStatus
+from apps.commissions.models import SampleExperimentStatus
 from apps.common.codes import next_business_code
 from apps.common.exceptions import DomainError
 from apps.dispatch.models import DispatchJob, DispatchLog, DispatchStatus
@@ -15,6 +18,56 @@ from apps.wip.models import WipBatch, WipStatus
 from apps.wip.services import mark_wip_dispatched
 
 TERMINAL = {DispatchStatus.COMPLETED, DispatchStatus.FAILED, DispatchStatus.CANCELLED}
+
+
+def _logical_request_title(title: str) -> str:
+    return re.sub(r"\s*[·•]\s*\d+/\d+\s*$", "", title or "").strip()
+
+
+def _logical_request_siblings(request):
+    return request.__class__.objects.filter(
+        requester_id=request.requester_id,
+        created_at__date=request.created_at.date(),
+    )
+
+
+def _logical_request_complete(request) -> bool:
+    title = _logical_request_title(request.title)
+    for sibling in _logical_request_siblings(request):
+        if _logical_request_title(sibling.title) != title:
+            continue
+        if sibling.status != RequestStatus.COMPLETED:
+            return False
+    return True
+
+
+def _request_has_open_experiments(request) -> bool:
+    return request.samples.filter(
+        experiments__status__in=[
+            SampleExperimentStatus.PENDING,
+            SampleExperimentStatus.READY,
+            SampleExperimentStatus.IN_WIP,
+            SampleExperimentStatus.RUNNING,
+        ]
+    ).exists()
+
+
+def _sync_request_after_final_check(request) -> None:
+    if request.samples.filter(status=SampleStatus.RUNNING).exists():
+        request.status = RequestStatus.RUNNING
+    elif request.samples.filter(status=SampleStatus.QUEUED).exists():
+        request.status = RequestStatus.QUEUED
+    elif request.samples.filter(status=SampleStatus.IN_WIP).exists():
+        request.status = RequestStatus.IN_WIP
+    elif _request_has_open_experiments(request):
+        request.status = RequestStatus.RECEIVED
+    elif not request.samples.exclude(
+        status__in=[SampleStatus.COMPLETED, SampleStatus.FAILED]
+    ).exists():
+        request.status = RequestStatus.COMPLETED
+    else:
+        request.status = RequestStatus.RECEIVED
+    request.save(update_fields=["status", "updated_at"])
 
 
 def dispatch_qs():
@@ -173,18 +226,68 @@ def retry_dispatch(actor, dispatch: DispatchJob, *, simulate_failure: bool = Fal
 
 
 def sync_request_completion(wip: WipBatch, verdict: str) -> None:
-    sample_status = SampleStatus.COMPLETED if verdict == "pass" else SampleStatus.FAILED
-    for item in wip.items.select_related("sample", "request"):
-        item.sample.status = sample_status
-        item.sample.save(update_fields=["status", "updated_at"])
+    experiment_status = (
+        SampleExperimentStatus.COMPLETED
+        if verdict == "pass"
+        else SampleExperimentStatus.FAILED
+    )
+    updated_requests = {}
+    for item in wip.items.select_related("sample", "request__requester"):
+        sample = item.sample
+        now = timezone.now()
+        sample.experiments.filter(current_wip=wip).update(
+            status=experiment_status,
+            current_wip=None,
+            completed_at=now,
+            updated_at=now,
+        )
+        has_remaining = sample.experiments.filter(
+            status__in=[
+                SampleExperimentStatus.PENDING,
+                SampleExperimentStatus.READY,
+            ]
+        ).exists()
+        has_failed = sample.experiments.filter(
+            status=SampleExperimentStatus.FAILED
+        ).exists()
+        sample.current_wip = None
+        if verdict != "pass" or has_failed:
+            sample.status = SampleStatus.FAILED
+        elif has_remaining:
+            next_experiment = (
+                sample.experiments.filter(status=SampleExperimentStatus.PENDING)
+                .order_by("sequence", "created_at")
+                .first()
+            )
+            if next_experiment:
+                next_experiment.status = SampleExperimentStatus.READY
+                next_experiment.save(update_fields=["status", "updated_at"])
+            sample.status = SampleStatus.RECEIVED
+        else:
+            sample.status = SampleStatus.COMPLETED
+        sample.save(update_fields=["status", "current_wip", "updated_at"])
         request = item.request
-        if not request.samples.exclude(status__in=[SampleStatus.COMPLETED, SampleStatus.FAILED]).exists():
+        if not request.samples.exclude(
+            status__in=[SampleStatus.COMPLETED, SampleStatus.FAILED]
+        ).exists():
             request.status = RequestStatus.FINAL_CHECK
             request.save(update_fields=["status", "updated_at"])
+        elif sample.status == SampleStatus.RECEIVED:
+            request.status = RequestStatus.RECEIVED
+            request.save(update_fields=["status", "updated_at"])
+        updated_requests[request.id] = request
     if not wip.dispatches.exclude(status=DispatchStatus.COMPLETED).exists():
         wip.status = WipStatus.COMPLETED if verdict == "pass" else WipStatus.FAILED
         wip.completed_at = timezone.now()
         wip.save(update_fields=["status", "completed_at", "updated_at"])
+    for request in updated_requests.values():
+        notify(
+            [request.requester],
+            "request.experiment_updates",
+            f"Request {request.request_no} has completed experiment updates",
+            "Please review the latest wafer experiment results.",
+            related_entity=request,
+        )
 
 
 @transaction.atomic
@@ -207,20 +310,28 @@ def final_confirm_dispatch(actor, dispatch: DispatchJob, notes: str = "") -> Dis
     )
     request_ids = []
     notified_request_ids = set()
+    notification_candidates = []
     for item in dispatch.wip.items.select_related("request__requester"):
         request = item.request
-        request.status = RequestStatus.COMPLETED
-        request.save(update_fields=["status", "updated_at"])
+        _sync_request_after_final_check(request)
         request_ids.append(str(request.id))
-        if request.id in notified_request_ids:
+        if request.status == RequestStatus.COMPLETED:
+            notification_candidates.append(request)
+    for request in notification_candidates:
+        logical_key = (
+            request.requester_id,
+            request.created_at.date(),
+            _logical_request_title(request.title),
+        )
+        if logical_key in notified_request_ids or not _logical_request_complete(request):
             continue
-        notified_request_ids.add(request.id)
+        notified_request_ids.add(logical_key)
         notify(
             [request.requester],
             "request.completed",
             f"Request {request.request_no} complete",
-            notes or f"Final results for {dispatch.dispatch_no} are ready.",
-            related_entity=dispatch,
+            notes or f"All wafers and experiments for this request are complete. Results are ready for review.",
+            related_entity=request,
         )
     notify_role(
         Role.LAB_MANAGER,

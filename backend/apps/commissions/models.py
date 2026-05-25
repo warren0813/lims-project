@@ -39,6 +39,16 @@ class SampleStatus(models.TextChoices):
     FAILED = "failed", "Failed"
 
 
+class SampleExperimentStatus(models.TextChoices):
+    PENDING = "pending", "Pending"
+    READY = "ready", "Ready"
+    IN_WIP = "in_wip", "In WIP"
+    RUNNING = "running", "Running"
+    COMPLETED = "completed", "Completed"
+    FAILED = "failed", "Failed"
+    CANCELLED = "cancelled", "Cancelled"
+
+
 class CommissionRequest(UUIDTimeStampedModel):
     request_no = models.CharField(max_length=32, unique=True)
     requester = models.ForeignKey(
@@ -146,6 +156,54 @@ class Sample(UUIDTimeStampedModel):
 
     def __str__(self) -> str:
         return self.sample_no
+
+
+class SampleExperiment(UUIDTimeStampedModel):
+    """One required experiment for one physical wafer/sample."""
+
+    sample = models.ForeignKey(
+        Sample, related_name="experiments", on_delete=models.CASCADE
+    )
+    experiment_type = models.ForeignKey(
+        "experiments.ExperimentType",
+        on_delete=models.PROTECT,
+        related_name="sample_experiments",
+    )
+    recipe = models.ForeignKey(
+        "equipment.Recipe",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="sample_experiments",
+    )
+    current_wip = models.ForeignKey(
+        "wip.WipBatch",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="sample_experiments",
+    )
+    sequence = models.PositiveIntegerField(default=1)
+    status = models.CharField(
+        max_length=40,
+        choices=SampleExperimentStatus.choices,
+        default=SampleExperimentStatus.PENDING,
+    )
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "sample_experiment"
+        unique_together = ("sample", "experiment_type")
+        indexes = [
+            models.Index(fields=["sample", "sequence"]),
+            models.Index(fields=["experiment_type", "status"]),
+            models.Index(fields=["status", "created_at"]),
+        ]
+        ordering = ["sequence", "created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.sample.sample_no} · {self.experiment_type.name}"
 
 
 class RequestAttachment(UUIDTimeStampedModel):

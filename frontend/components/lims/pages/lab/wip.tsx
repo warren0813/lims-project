@@ -91,23 +91,42 @@ export function LabWIP({ navigate }: LabWipProps) {
                       {proposal.batches.length} batch candidates · estimated {Math.round(proposal.estimatedTotalRuntimeSec / 60)} min
                     </div>
                   </div>
-                  <Button
-                    variant="dark"
-                    disabled={busy || proposal.batches.length === 0}
-                    onClick={async () => {
-                      setBusy(true)
-                      try {
-                        await api.wips.confirmProposal(proposal.id)
-                        await Promise.all([refresh(), refreshProposals()])
-                      } catch (error) {
-                        alert(error instanceof Error ? error.message : String(error))
-                      } finally {
-                        setBusy(false)
-                      }
-                    }}
-                  >
-                    Confirm Queue
-                  </Button>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                    <Button
+                      variant="secondary"
+                      disabled={busy}
+                      onClick={async () => {
+                        setBusy(true)
+                        try {
+                          await api.wips.cancelProposal(proposal.id)
+                          await refreshProposals()
+                        } catch (error) {
+                          alert(error instanceof Error ? error.message : String(error))
+                        } finally {
+                          setBusy(false)
+                        }
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="dark"
+                      disabled={busy || proposal.batches.length === 0}
+                      onClick={async () => {
+                        setBusy(true)
+                        try {
+                          await api.wips.confirmProposal(proposal.id)
+                          await Promise.all([refresh(), refreshProposals()])
+                        } catch (error) {
+                          alert(error instanceof Error ? error.message : String(error))
+                        } finally {
+                          setBusy(false)
+                        }
+                      }}
+                    >
+                      Confirm & Dispatch
+                    </Button>
+                  </div>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
                   {proposal.batches.map((batch) => (

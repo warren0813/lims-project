@@ -25,25 +25,82 @@ create fab and lab users.
 
 ## Local Development
 
-Backend:
+### Backend Setup
+
+**Prerequisites:**
+- Python 3.10+
+- PostgreSQL 12+ (or Docker)
+- Redis (optional, for Celery workers)
+
+**Installation:**
 
 ```bash
 cd backend
+
+# Create and activate virtual environment
 python -m venv .venv
-. .venv/bin/activate
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install dependencies
 pip install -e .
 pip install pytest pytest-django factory-boy ruff
-python manage.py migrate
-python manage.py runserver
 ```
 
-Optional demo data for local testing only:
+**Configuration:**
 
 ```bash
+# Copy environment file from root and update with your settings
+cp ../.env.example .env
+# Edit .env to configure:
+# - DJANGO_SECRET_KEY (generate with: python -c 'from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())')
+# - DEBUG=True for development
+# - DATABASE_URL=postgres://user:password@localhost:5432/lims (if using PostgreSQL)
+```
+
+**Database Setup:**
+
+```bash
+# Run migrations
+python manage.py migrate
+
+# Create superuser (lab manager) for first login
+python manage.py createsuperuser
+
+# Optional: Load demo data for testing
 python manage.py seed_demo
 ```
 
-Frontend:
+**Running the Server:**
+
+```bash
+# Basic development server
+python manage.py runserver
+
+# With Celery workers (background tasks)
+celery -A config worker --loglevel=info  # In another terminal
+
+# Without Redis/Celery (eager task execution)
+CELERY_TASK_ALWAYS_EAGER=True python manage.py runserver
+```
+
+**Testing:**
+
+```bash
+# Run all tests
+pytest
+
+# Run specific test file
+pytest tests/test_api.py -v
+
+# With coverage
+pytest --cov=src
+```
+
+**API Documentation:**
+
+Once running, access the interactive API docs at: http://localhost:8000/api/docs
+
+### Frontend Setup
 
 ```bash
 cd frontend

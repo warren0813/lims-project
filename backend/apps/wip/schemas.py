@@ -35,6 +35,9 @@ class WipSampleOut(Schema):
     request_no: str
     material_type: str
     status: str
+    experiments: list[dict] = []
+    experiment_progress: dict | None = None
+    safe_to_close: bool = False
 
 
 class WipOut(Schema):
@@ -55,6 +58,8 @@ class WipOut(Schema):
     completed_at: datetime | None
     note: str
     samples: list[WipSampleOut]
+    experiment_progress: dict | None = None
+    safe_to_close: bool = False
     dispatch_count: int
     created_at: datetime
     updated_at: datetime

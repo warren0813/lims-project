@@ -36,6 +36,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false
     async function loadSession() {
+      if (!api.hasAuthSession()) {
+        if (!cancelled) {
+          setUser(null)
+          setLoading(false)
+        }
+        return
+      }
       try {
         const current = await api.auth.me()
         if (!cancelled) {
