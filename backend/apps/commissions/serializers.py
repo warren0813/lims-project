@@ -72,6 +72,21 @@ def experiment_progress(experiments) -> dict[str, Any]:
 def sample_out(sample: Sample) -> dict[str, Any]:
     experiments = list(getattr(sample, "experiments", []).all())
     progress = experiment_progress(experiments)
+    final_review_dispatch_id = (
+        sample.wip_items.filter(
+            wip__dispatches__status="completed",
+            wip__dispatches__final_confirmed_at__isnull=True,
+        )
+        .order_by("-wip__dispatches__finished_at", "-wip__dispatches__created_at")
+        .values_list("wip__dispatches__id", flat=True)
+        .first()
+    )
+    latest_dispatch_id = (
+        sample.wip_items.filter(wip__dispatches__status="completed")
+        .order_by("-wip__dispatches__finished_at", "-wip__dispatches__created_at")
+        .values_list("wip__dispatches__id", flat=True)
+        .first()
+    )
     return {
         "id": str(sample.id),
         "sample_no": sample.sample_no,
@@ -93,6 +108,8 @@ def sample_out(sample: Sample) -> dict[str, Any]:
         "experiments": [sample_experiment_out(item) for item in experiments],
         "experiment_progress": progress,
         "safe_to_close": progress["all_done"],
+        "latest_dispatch_id": str(latest_dispatch_id) if latest_dispatch_id else None,
+        "final_review_dispatch_id": str(final_review_dispatch_id) if final_review_dispatch_id else None,
         "created_at": sample.created_at,
         "updated_at": sample.updated_at,
     }

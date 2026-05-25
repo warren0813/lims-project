@@ -1269,6 +1269,7 @@ const LabSamples = ({ navigate, defaultTab = 'all', showToast }) => {
   const [busyIds, setBusyIds] = lS(new Set());
   const [actionError, setActionError] = lS(null);
   const [expandedRequests, setExpandedRequests] = lS(new Set());
+  const didAutoExpandRequests = React.useRef(false);
 
   const runAction = async (id, op, label) => {
     setBusyIds(prev => new Set(prev).add(id));
@@ -1335,9 +1336,13 @@ const LabSamples = ({ navigate, defaultTab = 'all', showToast }) => {
     setExpandedRequests(prev => {
       const valid = new Set(requestGroups.map(g => String(g.id)));
       const next = new Set(Array.from(prev).filter(id => valid.has(id)));
-      if (next.size === 0 && requestGroups[0]) next.add(String(requestGroups[0].id));
+      if (!didAutoExpandRequests.current && next.size === 0 && requestGroups[0]) {
+        next.add(String(requestGroups[0].id));
+        didAutoExpandRequests.current = true;
+      }
       return next;
     });
+    if (requestGroups.length === 0) didAutoExpandRequests.current = false;
   }, [requestGroups]);
   const toggleGroup = (id) => {
     const key = String(id);
@@ -1454,7 +1459,7 @@ const LabSamples = ({ navigate, defaultTab = 'all', showToast }) => {
                     const showDot = fmt.level === 'overdue' || fmt.level === 'critical';
                     const busy = busyIds.has(w.id);
                     return (
-                      <button key={w.id} onClick={() => navigate({ page: 'lab_wafer', id: w.id })} style={{
+                      <button key={w.id} onClick={() => navigate(w.safeToClose && w.finalReviewDispatchId ? { page: 'lab_dispatch_detail', id: w.finalReviewDispatchId } : { page: 'lab_wafer', id: w.id })} style={{
                         display: 'grid',
                         gridTemplateColumns: '110px minmax(0,1fr) 150px 130px 150px 24px',
                         alignItems: 'center', gap: 18,
@@ -1478,6 +1483,10 @@ const LabSamples = ({ navigate, defaultTab = 'all', showToast }) => {
                             <span>{(URGENCY_DAYS[w.urgency] === 3 ? '3-day' : URGENCY_DAYS[w.urgency] === 7 ? '1-week' : '2-week')} window</span>
                             <span>·</span>
                             <span>{w.experimentProgress?.completed || 0}/{w.experimentProgress?.total || (w.experiments || []).length} exp done</span>
+                            {w.safeToClose && w.finalReviewDispatchId && <>
+                              <span>·</span>
+                              <span style={{ color: '#157a4a', fontWeight: 700 }}>final confirm waiting</span>
+                            </>}
                           </div>
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 8 }}>
                             {(w.experiments || []).map(exp => {
@@ -1993,6 +2002,7 @@ const LabWipList = ({ navigate, showToast }) => {
   const [autoBusy, setAutoBusy] = lS(false);
   const [confirmingId, setConfirmingId] = lS(null);
   const [cancelingId, setCancelingId] = lS(null);
+  const [lockingId, setLockingId] = lS(null);
   const [queueError, setQueueError] = lS(null);
   // Active = anything not yet terminal (created + in_progress).
   // Completed = terminal states (completed + aborted).
@@ -2067,6 +2077,19 @@ const LabWipList = ({ navigate, showToast }) => {
       setCancelingId(null);
     }
   };
+  const onLockWip = async (wip) => {
+    setLockingId(wip.id);
+    setQueueError(null);
+    try {
+      const locked = await window.api.wips.lock(wip.id);
+      showToast && showToast(`${locked.code || wip.code} locked for dispatch`);
+      await refresh();
+    } catch (e) {
+      setQueueError(e.message || String(e));
+    } finally {
+      setLockingId(null);
+    }
+  };
 
   if (loading && wips.length === 0) {
     return (
@@ -2137,7 +2160,12 @@ const LabWipList = ({ navigate, showToast }) => {
         {filtered.length === 0 ? (
           <Card padding={48} style={{ textAlign: 'center', color: muted }}>
             <LF.WIP size={32} color="#cbcbd6" style={{ marginBottom: 10 }}/>
-            <div style={{ fontSize: 14, fontWeight: 600, color: text2 }}>No WIPs in this view</div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: ink }}>No WIPs in this view</div>
+            <div style={{ fontSize: 13, color: muted, marginTop: 6 }}>Auto arrange received wafers or create a draft WIP to begin dispatch planning.</div>
+            <div style={{ display: 'inline-flex', gap: 8, marginTop: 14 }}>
+              <SecondaryBtn icon={<LF.Activity size={14}/>} onClick={onAutoArrange} disabled={autoBusy || !hasAutoWipCandidates}>Auto Arrange</SecondaryBtn>
+              <PrimaryBtn icon={<LF.Plus size={14}/>} onClick={openModal}>New WIP</PrimaryBtn>
+            </div>
           </Card>
         ) : filtered.map(w => {
           // Backend's experiment_type_id is integer; the local EXPERIMENTS
@@ -2148,10 +2176,11 @@ const LabWipList = ({ navigate, showToast }) => {
           const expCode = (findExp(w.experimentId)?.code) || (w.experimentName ? w.experimentName.split(/\s+/).map(t => t[0]).join('').slice(0, 4).toUpperCase() : '—');
           const progress = w.experimentProgress || { completed: 0, total: 0, percent: 0 };
           const requestNos = Array.from(new Set((w.samples || []).map(s => s.requestNo).filter(Boolean)));
+          const canLock = w.status === 'draft';
           return (
-            <button key={w.id} onClick={() => navigate({ page: 'lab_wip_detail', id: w.id })} style={{
+            <div key={w.id} onClick={() => navigate({ page: 'lab_wip_detail', id: w.id })} style={{
               display: 'grid',
-              gridTemplateColumns: '110px minmax(0,1fr) 110px 80px 90px 120px 120px 24px',
+              gridTemplateColumns: '110px minmax(0,1fr) 80px 90px 105px 120px 100px 110px 24px',
               alignItems: 'center', gap: 18,
               padding: '18px 22px', borderRadius: 14,
               background: '#fff', border: '1px solid rgba(0,0,0,0.08)',
@@ -2192,8 +2221,22 @@ const LabWipList = ({ navigate, showToast }) => {
                 {w.safeToClose ? 'Safe to close' : `${progress.completed || 0}/${progress.total || 0} exp`}
               </span>
               <span><Pill kind={w.status} dotted={w.status === 'in_progress'}/></span>
+              <span onClick={(e) => e.stopPropagation()} style={{ textAlign: 'right' }}>
+                {canLock ? (
+                  <SecondaryBtn
+                    icon={<LF.Check size={13}/>}
+                    disabled={lockingId === w.id}
+                    onClick={() => onLockWip(w)}
+                    style={{ padding: '6px 10px', fontSize: 12 }}
+                  >
+                    {lockingId === w.id ? 'Locking…' : 'Lock WIP'}
+                  </SecondaryBtn>
+                ) : (
+                  <span style={{ fontSize: 12, color: muted }}>{w.status === 'ready_for_dispatch' ? 'Locked' : '—'}</span>
+                )}
+              </span>
               <LF.ChevronRight size={15} color="#cbcbd6"/>
-            </button>
+            </div>
           );
         })}
       </div>
@@ -2802,16 +2845,17 @@ const AddDispatchModalInner = ({ onClose, wip, onCreated }) => {
 // ── Dispatch list ───────────────────────────────────────────────
 const LabDispatchList = ({ navigate, defaultTab = 'active' }) => {
   const { dispatches, loading, error } = useLabDispatches();
-  const [tab, setTab] = lS(defaultTab);
-  const groups = {
-    active: ['ready_for_dispatch', 'dispatched', 'pending', 'running'],
-    record: ['unloaded', 'exception'],
-    done:   ['completed', 'aborted'],
-    all:    null,
+  const [tab, setTab] = lS(defaultTab === 'record' ? 'confirm' : defaultTab);
+  const isWaitingConfirmation = (d) => d.status === 'completed' && !d.finalConfirmedAt;
+  const isClosed = (d) => (d.status === 'completed' && !!d.finalConfirmedAt) || d.status === 'aborted';
+  const isActiveDispatch = (d) => !isWaitingConfirmation(d) && !isClosed(d);
+  const filterDispatchesForTab = (nextTab) => {
+    if (nextTab === 'active') return dispatches.filter(isActiveDispatch);
+    if (nextTab === 'confirm') return dispatches.filter(isWaitingConfirmation);
+    if (nextTab === 'done') return dispatches.filter(isClosed);
+    return dispatches;
   };
-  const filtered = groups[tab] === null
-    ? dispatches
-    : dispatches.filter(d => groups[tab].includes(d.status));
+  const filtered = filterDispatchesForTab(tab);
   const equipmentGroups = React.useMemo(() => {
     const map = new Map();
     filtered.forEach(d => {
@@ -2844,7 +2888,7 @@ const LabDispatchList = ({ navigate, defaultTab = 'active' }) => {
 
   const tabs = [
     { id: 'active', label: 'Active' },
-    { id: 'record', label: 'Needs Result' },
+    { id: 'confirm', label: 'Waiting for Confirmation' },
     { id: 'done',   label: 'Closed' },
     { id: 'all',    label: 'All' },
   ];
@@ -2870,7 +2914,7 @@ const LabDispatchList = ({ navigate, defaultTab = 'active' }) => {
       )}
       <div style={{ display: 'flex', gap: 4, marginBottom: 14, borderBottom: `1px solid ${line}` }}>
         {tabs.map(t => {
-          const n = (groups[t.id] === null ? dispatches : dispatches.filter(d => groups[t.id].includes(d.status))).length;
+          const n = filterDispatchesForTab(t.id).length;
           return (
             <button key={t.id} onClick={() => setTab(t.id)} style={{
               display: 'inline-flex', alignItems: 'center', gap: 6,
@@ -2898,7 +2942,14 @@ const LabDispatchList = ({ navigate, defaultTab = 'active' }) => {
         {filtered.length === 0 ? (
           <Card padding={48} style={{ textAlign: 'center', color: muted }}>
             <LF.Activity size={32} color="#cbcbd6" style={{ marginBottom: 10 }}/>
-            <div style={{ fontSize: 14, fontWeight: 600, color: text2 }}>No dispatches</div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: ink }}>No dispatches here</div>
+            <div style={{ fontSize: 13, color: muted, marginTop: 6 }}>
+              {tab === 'confirm'
+                ? 'Completed dispatches waiting for final confirmation will appear here.'
+                : tab === 'active'
+                  ? 'Confirmed WIP batches will create active dispatches when equipment is assigned.'
+                  : 'No dispatches match this status bucket.'}
+            </div>
           </Card>
         ) : equipmentGroups.map(group => {
           const running = group.dispatches.find(d => d.status === 'running') || group.dispatches[0];
@@ -2938,7 +2989,7 @@ const LabDispatchList = ({ navigate, defaultTab = 'active' }) => {
                   return (
                     <button key={d.id} onClick={() => navigate({ page: 'lab_dispatch_detail', id: d.id })} style={{
                       display: 'grid',
-                      gridTemplateColumns: '110px minmax(0,1fr) 130px 90px 140px 24px',
+                      gridTemplateColumns: '110px minmax(0,1fr) 130px 90px 95px 140px 24px',
                       alignItems: 'center', gap: 14,
                       padding: '13px 20px',
                       background: '#fff', border: 'none', borderTop: `1px solid ${lineSoft}`,
@@ -2951,6 +3002,7 @@ const LabDispatchList = ({ navigate, defaultTab = 'active' }) => {
                       </span>
                       <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: text2 }}>{d.wipNo || `WIP-${String(d.wipId).padStart(4,'0')}`}</span>
                       <span style={{ fontSize: 12.5, color: text2 }}>{d.waferCount || 0} wafers</span>
+                      <span><Pill kind={d.status}/></span>
                       <span>
                         <ProgressBar value={pct} height={6} color="linear-gradient(90deg, #f4a8bf, #6c67b8)" track="#f1eef9"/>
                       </span>

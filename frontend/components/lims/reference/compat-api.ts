@@ -45,7 +45,7 @@ export function createReferenceApi() {
     requests: {
       ...api.requests,
       async close(id: string) {
-        return api.requests.get(id)
+        return api.requests.close(id)
       },
       async returnRequest(id: string, reason = "More information requested") {
         return api.requests.moreInfo(id, reason)
@@ -61,14 +61,13 @@ export function createReferenceApi() {
       },
       async getExperiments(id: string) {
         const sample = await safeGet(null, () => api.samples.get(id))
-        if (!sample?.requestId) return []
-        const request = await safeGet(null, () => api.requests.get(sample.requestId!))
-        return (request?.experiment_types || []).map((experiment: AnyRecord) => ({
-          experimentTypeId: experiment.id,
-          experimentName: experiment.name,
-          status: sample.status === "completed" ? "done" : sample.status === "in_wip" ? "running" : "pending",
+        if (!sample) return []
+        return (sample.experiments || []).map((experiment: AnyRecord) => ({
+          experimentTypeId: experiment.experimentTypeId,
+          experimentName: experiment.experimentTypeName,
+          status: experiment.status === "completed" ? "done" : experiment.status === "in_wip" || experiment.status === "running" ? "running" : experiment.status || "pending",
           verdict: null,
-          dispatchId: null,
+          dispatchId: experiment.currentWipId || null,
           result: null,
         }))
       },

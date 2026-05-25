@@ -79,6 +79,9 @@ python manage.py runserver
 # With Celery workers (background tasks)
 celery -A config worker --loglevel=info  # In another terminal
 
+# Simulated experiment duration for all Celery equipment workers
+EXPERIMENT_DURATION_SECONDS=15 celery -A config worker --loglevel=info
+
 # Without Redis/Celery (eager task execution)
 CELERY_TASK_ALWAYS_EAGER=True python manage.py runserver
 ```
@@ -110,3 +113,4 @@ npm run dev
 ```
 
 For a single-process local backend without Redis/Celery workers, run the backend with `CELERY_TASK_ALWAYS_EAGER=True`.
+For Docker Compose, set `EXPERIMENT_DURATION_SECONDS` in `.env`, then restart `backend` and all `worker-*` services.

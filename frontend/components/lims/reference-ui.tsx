@@ -78,6 +78,7 @@ function ReferenceAppContent({ initialRoute }: { initialRoute?: Route }) {
   const unreadCount = useUnreadNotificationCount(Boolean(user) && Boolean(win?.api?.hasAuthSession?.()))
 
   const navigate = useCallback((nextRoute: Route) => {
+    syncedInitialRoute.current = routeKey(nextRoute)
     setRoute((current) => sameRoute(current, nextRoute) ? current : nextRoute)
     if (!user) return
     const nextPath = routeToPath(nextRoute, user.role)

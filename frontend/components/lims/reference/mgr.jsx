@@ -795,7 +795,8 @@ const MgrRequestDetail = ({ id, navigate, showToast }) => {
 
   const onApprove = () => {
     if (!window.confirm(`Approve "${r.title}"?`)) return;
-    const targets = (r.childRequests || [r]).filter(item => item.status === 'submitted');
+    const pendingTargets = (r.childRequests || [r]).filter(item => item.status === 'submitted');
+    const targets = pendingTargets.length ? pendingTargets : [r];
     runAction(
       () => Promise.all(targets.map(item => window.api.requests.approve(item.id))),
       `${targets.length} request${targets.length === 1 ? '' : 's'} approved`,
@@ -808,7 +809,8 @@ const MgrRequestDetail = ({ id, navigate, showToast }) => {
   const onSubmitModal = async (reason) => {
     const action = modal;
     setModal(null);
-    const targets = (r.childRequests || [r]).filter(item => item.status === 'submitted');
+    const pendingTargets = (r.childRequests || [r]).filter(item => item.status === 'submitted');
+    const targets = pendingTargets.length ? pendingTargets : [r];
     if (action === 'RETURN') {
       await runAction(
         () => Promise.all(targets.map(item => window.api.requests.returnRequest(item.id, reason))),

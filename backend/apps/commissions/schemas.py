@@ -153,6 +153,8 @@ class SampleOut(Schema):
     experiments: list[SampleExperimentOut] = []
     experiment_progress: ExperimentProgressOut | None = None
     safe_to_close: bool = False
+    latest_dispatch_id: str | None = None
+    final_review_dispatch_id: str | None = None
     created_at: datetime
     updated_at: datetime
 

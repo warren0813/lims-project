@@ -12,6 +12,7 @@ const FAB_INBOXES = [
   { id: "approved", label: "Approved Requests", match: (n: NotificationRow) => n.type === "request.approved" },
   { id: "rejected", label: "Rejected Requests", match: (n: NotificationRow) => n.type === "request.rejected" || n.type === "sample.rejected" },
   { id: "received", label: "Sample Received", match: (n: NotificationRow) => n.type === "sample.received" },
+  { id: "completed", label: "Request Completed", match: (n: NotificationRow) => n.type === "request.completed" },
 ]
 
 const MANAGER_INBOXES = [

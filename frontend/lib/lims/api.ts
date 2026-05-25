@@ -48,6 +48,8 @@ export interface SampleRow {
   experiments?: SampleExperimentRow[]
   experimentProgress?: ProgressSummary
   safeToClose?: boolean
+  latestDispatchId?: ID | null
+  finalReviewDispatchId?: ID | null
 }
 
 export interface SampleExperimentRow {
@@ -427,6 +429,8 @@ function normalizeSampleRow(s: any): SampleRow {
     experiments,
     experimentProgress: normalizeProgress(s.experiment_progress, experiments),
     safeToClose: Boolean(s.safe_to_close),
+    latestDispatchId: s.latest_dispatch_id ? String(s.latest_dispatch_id) : null,
+    finalReviewDispatchId: s.final_review_dispatch_id ? String(s.final_review_dispatch_id) : null,
   }
 }
 
