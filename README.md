@@ -8,10 +8,11 @@ This repository contains the rebuilt LIMS MVP:
 ## Run With Docker Compose
 
 ```bash
+cp .env.example .env
 docker compose up --build
 ```
 
-Services:
+Services (expose these port if you are on remote):
 
 - Frontend: http://localhost:3000
 - Backend API: http://localhost:8000/api
@@ -21,7 +22,7 @@ Services:
 
 The application starts with a clean database. On first launch, create the first
 lab manager from the login screen. After that, use the manager account APIs/UI to
-create fab and lab users.
+create fab and lab users. Expose
 
 ## Local Development
 
