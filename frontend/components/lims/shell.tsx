@@ -175,7 +175,6 @@ export const Sidebar = ({
         }}>{user?.display?.[0]?.toUpperCase() || 'L'}</div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ color: '#fff', fontSize: 13.5, fontWeight: 600, lineHeight: 1.3 }}>{user?.display || 'lab_member'}</div>
-          <div style={{ fontSize: 11, color: '#888899', marginTop: 2 }}>{user?.subtitle || '實驗室成員'}</div>
         </div>
         {onLogout && (
           <button 

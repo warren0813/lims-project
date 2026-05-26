@@ -44,14 +44,14 @@ function useReferenceBundle() {
       const win = window as ReferenceWindow
       win.React = React
       win.api = referenceApi
-      await import("./reference/icons.jsx")
-      await import("./reference/primitives.jsx")
-      await import("./reference/shell.jsx")
-      await import("./reference/login.jsx")
-      await import("./reference/postlogin.jsx")
-      await import("./reference/fab.jsx")
-      await import("./reference/lab.jsx")
-      await import("./reference/mgr.jsx")
+      await import("./reference/icons")
+      await import("./reference/primitives")
+      await import("./reference/shell")
+      await import("./reference/login")
+      await import("./reference/postlogin")
+      await import("./reference/fab")
+      await import("./reference/lab")
+      await import("./reference/mgr")
       if (!cancelled) setReady(true)
     }
 

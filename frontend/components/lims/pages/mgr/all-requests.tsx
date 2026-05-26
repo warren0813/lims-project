@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import type { Route } from '@/components/lims/shell';
 import { useRequests } from '@/lib/lims/hooks';
 import { Badge } from '@/components/lims/primitives';
@@ -20,12 +20,19 @@ const FabCard = ({ children, padding = 22, style }: any) => (
   </div>
 );
 
-interface MgrAllRequestsProps { navigate?: (route: Route) => void }
+interface MgrAllRequestsProps {
+  navigate?: (route: Route) => void
+  initialFilter?: string
+}
 
-export function MgrAllRequests({ navigate }: MgrAllRequestsProps) {
+export function MgrAllRequests({ navigate, initialFilter = 'all' }: MgrAllRequestsProps) {
   const { data: requests } = useRequests();
-  const [filter, setFilter] = useState('all');
+  const [filter, setFilter] = useState(initialFilter);
   const [searchTerm, setSearchTerm] = useState('');
+
+  useEffect(() => {
+    setFilter(initialFilter);
+  }, [initialFilter]);
 
   const filtered = useMemo(() => {
     let result = requests;

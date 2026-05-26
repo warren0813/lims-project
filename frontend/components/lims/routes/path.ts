@@ -31,9 +31,10 @@ export function routeToPath(route: Route, role?: string): string {
     case 'fab_draft_edit': return `/fab/drafts/${route.id}/edit`
     case 'fab_request': return `/fab/requests/${route.id}`
     case 'mgr_dashboard': return '/manager/dashboard'
-    case 'mgr_all_requests': return '/manager/requests'
+    case 'mgr_all_requests': return route.tab && route.tab !== 'all' ? `/manager/requests?tab=${encodeURIComponent(route.tab)}` : '/manager/requests'
     case 'mgr_request': return `/manager/requests/${route.id}`
     case 'mgr_recipes': return '/manager/recipes'
+    case 'mgr_equipment': return route.tab ? `/manager/equipment?tab=${encodeURIComponent(route.tab)}` : '/manager/equipment'
     case 'mgr_reports': return '/manager/reports'
     case 'mgr_accounts': return '/manager/accounts'
     case 'mgr_notifications': return '/manager/notifications'
@@ -41,6 +42,7 @@ export function routeToPath(route: Route, role?: string): string {
     case 'dashboard': return rolePath === 'manager' ? '/manager/lab/dashboard' : '/lab/dashboard'
     case 'lab_samples':
     case 'samples': return labPath('samples', route, rolePath)
+    case 'lab_sample_new': return labPath('samples/new', route, rolePath)
     case 'lab_wafer': return labPath(`samples/${route.id}`, route, rolePath)
     case 'lab_wip':
     case 'wip': return labPath('wip', route, rolePath)
@@ -83,6 +85,7 @@ export function routeFromPath(role: string | undefined, segments: string[] = [],
     if (first === 'requests' && second) return { page: 'mgr_request', id: numericId(second) }
     if (first === 'requests') return { page: 'mgr_all_requests' }
     if (first === 'recipes') return { page: 'mgr_recipes' }
+    if (first === 'equipment') return { page: 'mgr_equipment', tab }
     if (first === 'reports') return { page: 'mgr_reports' }
     if (first === 'accounts') return { page: 'mgr_accounts' }
     if (first === 'notifications') return { page: 'mgr_notifications' }
@@ -95,6 +98,7 @@ export function routeFromPath(role: string | undefined, segments: string[] = [],
 function labRouteFromSegments(segments: string[], tab?: string): Route {
   const [first, second] = segments
   if (!first || first === 'dashboard') return { page: 'lab_dashboard' }
+  if (first === 'samples' && second === 'new') return { page: 'lab_sample_new' }
   if (first === 'samples' && second) return { page: 'lab_wafer', id: numericId(second) }
   if (first === 'samples') return { page: 'lab_samples', tab: tab || 'all' }
   if (first === 'wip' && second) return { page: 'lab_wip_detail', id: numericId(second) }

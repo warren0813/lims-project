@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from django.db import transaction
 from django.http import HttpRequest
+from django.utils import timezone
 from ninja import Query, Router
 
 from api.schemas import ErrorOut
@@ -74,6 +77,19 @@ def list_equipment(
     if status:
         qs = qs.filter(status=status)
     return 200, [equipment_out(item) for item in qs]
+
+
+@router.get("/alerts", response={200: dict, 403: ErrorOut})
+def equipment_alerts(request: HttpRequest):
+    if not has_lab_role(request):
+        return 403, {"detail": "Permission denied"}
+    stale_before = timezone.now() - timedelta(days=180)
+    qs = _equipment_qs().filter(status=EquipmentStatus.FAULTY) | _equipment_qs().filter(
+        is_active=True,
+        updated_at__lt=stale_before,
+    )
+    items = [equipment_out(item) for item in qs.distinct().order_by("equipment_code")]
+    return 200, {"count": len(items), "items": items}
 
 
 @router.post("/", response={201: EquipmentOut, 400: ErrorOut, 403: ErrorOut, 404: ErrorOut})

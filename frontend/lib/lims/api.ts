@@ -226,6 +226,35 @@ export interface NotificationRow {
   createdAt: string | null
 }
 
+export interface DashboardStatBucket {
+  current: number
+  previous: number
+  delta: number
+  deltaPercent: number | null
+}
+
+export interface DashboardStats {
+  toApprove: DashboardStatBucket
+  inProgress: DashboardStatBucket
+  completed: DashboardStatBucket
+  equipment: DashboardStatBucket
+}
+
+export interface DashboardChart {
+  labels: string[]
+  dailyCount: number[]
+  utilizationPct: number[]
+  anomalies: { date: string; reason: string }[]
+}
+
+export interface ActivityEvent {
+  id: string
+  type: 'sample_received' | 'test_completed' | 'equipment_alert' | 'approval_requested'
+  label: string
+  timestamp: string
+  linkTo: string
+}
+
 export interface UserAdminRow {
   id: number
   username: string
@@ -974,6 +1003,13 @@ export const api = {
       const out = await call<any[]>(`/equipment/?${new URLSearchParams(q)}`)
       return out.map(normalizeEquipment)
     },
+    async alerts(): Promise<{ count: number; items: EquipmentRow[] }> {
+      const out = await call<any>('/equipment/alerts')
+      return {
+        count: Number(out.count || 0),
+        items: (out.items || []).map(normalizeEquipment),
+      }
+    },
     async create(payload: any): Promise<EquipmentRow> {
       return normalizeEquipment(await call<any>('/equipment/', {
         method: 'POST',
@@ -1002,6 +1038,21 @@ export const api = {
         body.recipe_ids = payload.recipe_ids ?? payload.recipeIds ?? payload.capability_recipe_ids
       }
       return normalizeEquipment(await call<any>(`/equipment/${id}`, { method: 'PATCH', body: JSON.stringify(body) }))
+    },
+  },
+
+  dashboard: {
+    async stats(period: '7d' | '30d' | '90d' = '30d'): Promise<DashboardStats> {
+      return call<DashboardStats>(`/dashboard/stats?${new URLSearchParams({ period })}`)
+    },
+    async chart(metric: 'samples' | 'wip' | 'equipment' = 'samples', range: '7d' | '30d' | '90d' = '30d'): Promise<DashboardChart> {
+      return call<DashboardChart>(`/dashboard/chart?${new URLSearchParams({ metric, range })}`)
+    },
+  },
+
+  activity: {
+    async recent(limit = 5): Promise<ActivityEvent[]> {
+      return call<ActivityEvent[]>(`/activity/recent?${new URLSearchParams({ limit: String(limit) })}`)
     },
   },
 

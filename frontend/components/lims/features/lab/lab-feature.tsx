@@ -18,8 +18,8 @@ interface LabFeatureProps {
 }
 
 export function LabFeature({ route, navigate, canManage = false }: LabFeatureProps) {
-  if (route.page === 'lab_samples' || route.page === 'samples') {
-    return <LabSamples navigate={navigate} tab={route.tab || 'all'} />
+  if (route.page === 'lab_samples' || route.page === 'samples' || route.page === 'lab_sample_new') {
+    return <LabSamples navigate={navigate} tab={route.page === 'lab_sample_new' ? 'incoming' : route.tab || 'all'} />
   }
 
   if (route.page === 'lab_wafer') {

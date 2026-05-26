@@ -1,3 +1,5 @@
+/* eslint-disable */
+// @ts-nocheck
 const React = window.React;
 
 // Lucide-style 2px stroke icons. All accept `size` and `color` props.

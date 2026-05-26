@@ -6,6 +6,7 @@ from apps.accounts.api import notification_router, user_router
 from apps.accounts.api import router as auth_router
 from apps.commissions.api import router as requests_router
 from apps.commissions.api import sample_router
+from apps.dashboard.api import activity_router, dashboard_router
 from apps.dispatch.api import router as dispatch_router
 from apps.equipment.api import recipe_router
 from apps.equipment.api import router as equipment_router
@@ -31,6 +32,8 @@ api.add_router("/samples/", sample_router)
 api.add_router("/wip/", wip_router)
 api.add_router("/wips/", wip_router, url_name_prefix="wips")
 api.add_router("/dispatches/", dispatch_router)
+api.add_router("/dashboard/", dashboard_router)
+api.add_router("/activity/", activity_router)
 api.add_router("/realtime/", realtime_router)
 api.add_router("/reports/", reports_router)
 

@@ -1,4 +1,7 @@
+/* eslint-disable */
+// @ts-nocheck
 const React = window.React;
+const I = window.I;
 
 // Login page — split layout, dark left panel + sign-in form right
 const ACCOUNTS = {

@@ -1,4 +1,7 @@
+/* eslint-disable */
+// @ts-nocheck
 const React = window.React;
+const I = window.I;
 
 // App shell: sidebar nav, top bar, content wrapper
 
@@ -176,7 +179,6 @@ const Sidebar = ({ route, navigate, counts, user, onLogout, navItems = NAV_ITEMS
             fontSize: 10, fontWeight: 700, whiteSpace: 'nowrap',
           }}>{ROLE_LABELS[user?.role] || user?.role || 'User'}</span>
         </div>
-        <div style={{ fontSize: 11, color: isFab ? '#64748b' : '#888899', marginTop: 2 }}>{user?.subtitle || '實驗室成員'}</div>
       </div>
       {onLogout && (
         <button onClick={onLogout} title="Sign out" style={{

@@ -1,3 +1,5 @@
+/* eslint-disable */
+// @ts-nocheck
 const React = window.React;
 
 // Reusable UI primitives — Card, Badge, Button, Pill, etc.

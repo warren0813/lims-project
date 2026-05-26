@@ -1,4 +1,7 @@
+/* eslint-disable */
+// @ts-nocheck
 const React = window.React;
+const I = window.I;
 
 // Post-login landing — minimal shell + welcome panel per role.
 // This is the "foundation" frame the rest of the product will fit into.

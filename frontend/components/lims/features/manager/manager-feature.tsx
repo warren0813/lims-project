@@ -5,6 +5,7 @@ import { MgrDashboard } from "@/components/lims/pages/mgr/dashboard"
 import { MgrAllRequests } from "@/components/lims/pages/mgr/all-requests"
 import { MgrRequestDetail } from "@/components/lims/pages/mgr/request-detail"
 import { MgrRecipes } from "@/components/lims/pages/mgr/recipes"
+import { MgrEquipment } from "@/components/lims/pages/mgr/equipment"
 import { MgrReports } from "@/components/lims/pages/mgr/reports"
 import { MgrAccounts } from "@/components/lims/pages/mgr/accounts"
 import { NotificationsPage } from "@/components/lims/pages/notifications"
@@ -16,7 +17,7 @@ interface ManagerFeatureProps {
 
 export function ManagerFeature({ route, navigate }: ManagerFeatureProps) {
   if (route.page === 'mgr_all_requests') {
-    return <MgrAllRequests navigate={navigate} />
+    return <MgrAllRequests navigate={navigate} initialFilter={route.tab || 'all'} />
   }
 
   if (route.page === 'mgr_request') {
@@ -25,6 +26,10 @@ export function ManagerFeature({ route, navigate }: ManagerFeatureProps) {
 
   if (route.page === 'mgr_recipes') {
     return <MgrRecipes />
+  }
+
+  if (route.page === 'mgr_equipment') {
+    return <MgrEquipment />
   }
 
   if (route.page === 'mgr_reports') {
