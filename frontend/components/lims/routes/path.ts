@@ -83,7 +83,7 @@ export function routeFromPath(role: string | undefined, segments: string[] = [],
     if (first === 'lab') return labRouteFromSegments(managerSegments, tab)
     if (!first || first === 'dashboard') return { page: 'mgr_dashboard' }
     if (first === 'requests' && second) return { page: 'mgr_request', id: numericId(second) }
-    if (first === 'requests') return { page: 'mgr_all_requests' }
+    if (first === 'requests') return { page: 'mgr_all_requests', tab: tab || 'pending' }
     if (first === 'recipes') return { page: 'mgr_recipes' }
     if (first === 'equipment') return { page: 'mgr_equipment', tab }
     if (first === 'reports') return { page: 'mgr_reports' }

@@ -95,6 +95,81 @@ const useMgrTrend = (metric = 'requests_per_day', days = 30) => {
   return { data, loading, error };
 };
 
+const useMgrDashboardStats = (period = '30d') => {
+  const [data, setData] = mS(null);
+  const [loading, setLoading] = mS(true);
+  const [error, setError] = mS(null);
+  const refresh = React.useCallback(() => {
+    if (!window.api?.dashboard?.stats) { setLoading(false); return; }
+    setLoading(true);
+    window.api.dashboard.stats(period)
+      .then(d => { setData(d); setError(null); })
+      .catch(err => setError(err.message || String(err)))
+      .finally(() => setLoading(false));
+  }, [period]);
+  React.useEffect(() => { refresh(); }, [refresh]);
+  React.useEffect(() => {
+    const h = setInterval(refresh, 30000);
+    return () => clearInterval(h);
+  }, [refresh]);
+  return { data, loading, error, refresh };
+};
+
+const useMgrDashboardChart = (metric = 'samples', range = '30d') => {
+  const [data, setData] = mS(null);
+  const [loading, setLoading] = mS(true);
+  const [error, setError] = mS(null);
+  React.useEffect(() => {
+    if (!window.api?.dashboard?.chart) { setLoading(false); return; }
+    setLoading(true);
+    window.api.dashboard.chart(metric, range)
+      .then(d => { setData(d); setError(null); })
+      .catch(err => setError(err.message || String(err)))
+      .finally(() => setLoading(false));
+  }, [metric, range]);
+  return { data, loading, error };
+};
+
+const useMgrRecentActivity = (limit = 5) => {
+  const [data, setData] = mS([]);
+  const [loading, setLoading] = mS(true);
+  const [error, setError] = mS(null);
+  const refresh = React.useCallback(() => {
+    if (!window.api?.activity?.recent) { setLoading(false); return; }
+    setLoading(true);
+    window.api.activity.recent(limit)
+      .then(items => { setData(items || []); setError(null); })
+      .catch(err => setError(err.message || String(err)))
+      .finally(() => setLoading(false));
+  }, [limit]);
+  React.useEffect(() => { refresh(); }, [refresh]);
+  React.useEffect(() => {
+    const h = setInterval(refresh, 30000);
+    return () => clearInterval(h);
+  }, [refresh]);
+  return { data, loading, error, refresh };
+};
+
+const useMgrEquipmentAlerts = () => {
+  const [data, setData] = mS({ count: 0, items: [] });
+  const [loading, setLoading] = mS(true);
+  const [error, setError] = mS(null);
+  const refresh = React.useCallback(() => {
+    if (!window.api?.equipment?.alerts) { setLoading(false); return; }
+    setLoading(true);
+    window.api.equipment.alerts()
+      .then(d => { setData(d || { count: 0, items: [] }); setError(null); })
+      .catch(err => setError(err.message || String(err)))
+      .finally(() => setLoading(false));
+  }, []);
+  React.useEffect(() => { refresh(); }, [refresh]);
+  React.useEffect(() => {
+    const h = setInterval(refresh, 30000);
+    return () => clearInterval(h);
+  }, [refresh]);
+  return { data, loading, error, refresh };
+};
+
 // Live experiment-types catalogue, used by the Recipe and Equipment
 // modals to populate their dropdowns. (`fab.jsx` has its own
 // `useExperimentTypes` inside that file's IIFE — not reachable here.)
@@ -1648,7 +1723,18 @@ const MgrReports = () => {
 // ── Dashboard (manager) ───────────────────────────────────────
 // Lab-dashboard–style tiles + an "Awaiting your Response" queue of
 // submitted requests so the manager can drop straight into the approval flow.
-const MgrStatTile = ({ label, value, icon, tint, accent, onClick }) => (
+const deltaStyle = (bucket, inverseGood = false) => {
+  const delta = Number(bucket?.delta || 0);
+  const good = inverseGood ? delta < 0 : delta > 0;
+  const bad = inverseGood ? delta > 0 : delta < 0;
+  if (good) return { bg: '#dff7e8', fg: '#157a4a', text: `${delta > 0 ? '+' : ''}${delta} vs last 30d` };
+  if (bad) return { bg: '#fde4e4', fg: '#c0394a', text: `${delta > 0 ? '+' : ''}${delta} vs last 30d` };
+  return { bg: '#f1f2f6', fg: mText2, text: '0 vs last 30d' };
+};
+
+const MgrStatTile = ({ label, value, icon, tint, accent, onClick, delta, inverseGood }) => {
+  const d = deltaStyle(delta, inverseGood);
+  return (
   <button onClick={onClick} disabled={!onClick} style={{
     position: 'relative', textAlign: 'left', padding: '16px 18px',
     borderRadius: 14, background: '#fff',
@@ -1666,25 +1752,116 @@ const MgrStatTile = ({ label, value, icon, tint, accent, onClick }) => (
       }}>{React.cloneElement(icon, { color: accent })}</span>
       <span style={{ fontSize: 12, color: mText2, fontWeight: 600 }}>{label}</span>
     </div>
-    <div style={{
-      fontFamily: 'var(--font-display)', fontSize: 34, fontWeight: 700,
-      color: mInk, letterSpacing: '-0.02em', lineHeight: 1,
-    }}>{value}</div>
+    <div style={{ display: 'flex', alignItems: 'end', justifyContent: 'space-between', gap: 10 }}>
+      <div style={{
+        fontFamily: 'var(--font-display)', fontSize: 34, fontWeight: 700,
+        color: mInk, letterSpacing: '-0.02em', lineHeight: 1,
+      }}>{value}</div>
+      <span style={{
+        padding: '4px 8px', borderRadius: 999, background: d.bg, color: d.fg,
+        fontSize: 11, fontWeight: 800, whiteSpace: 'nowrap',
+      }}>{d.text}</span>
+    </div>
+  </button>
+  );
+};
+
+const ShortcutCard = ({ icon, label, subtitle, badge, onClick }) => (
+  <button onClick={onClick} style={{
+    padding: '16px 18px', borderRadius: 14, background: '#fff', border: `1px solid ${mLine}`,
+    display: 'flex', alignItems: 'center', gap: 13, textAlign: 'left', cursor: 'pointer',
+    fontFamily: 'inherit', transition: 'transform 0.15s, border-color 0.15s, box-shadow 0.15s',
+  }}
+    onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.borderColor = 'rgba(108,103,184,0.35)'; e.currentTarget.style.boxShadow = '0 10px 24px -16px rgba(20,20,28,0.32)'; }}
+    onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.borderColor = mLine; e.currentTarget.style.boxShadow = 'none'; }}
+  >
+    <span style={{
+      width: 38, height: 38, borderRadius: 12, background: '#ecebf3', color: mAccent,
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flex: '0 0 auto',
+    }}>{icon}</span>
+    <span style={{ minWidth: 0 }}>
+      <span style={{ display: 'block', fontSize: 14, fontWeight: 800, color: mInk }}>{label}</span>
+      <span style={{ display: 'block', fontSize: 12, color: mMuted, marginTop: 3 }}>{subtitle}</span>
+    </span>
+    {badge > 0 && (
+      <span style={{
+        marginLeft: 'auto', minWidth: 24, height: 24, borderRadius: 999,
+        background: '#fde4e4', color: '#c0394a', fontSize: 11, fontWeight: 900,
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      }}>{badge}</span>
+    )}
   </button>
 );
 
+const relativeTime = (iso) => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const sec = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000));
+  if (sec < 60) return 'just now';
+  const min = Math.round(sec / 60);
+  if (min < 60) return `${min} minute${min === 1 ? '' : 's'} ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr} hour${hr === 1 ? '' : 's'} ago`;
+  const day = Math.round(hr / 24);
+  return `${day} day${day === 1 ? '' : 's'} ago`;
+};
+
+const activityTone = (type) => {
+  if (type === 'equipment_alert') return '#c0394a';
+  if (type === 'test_completed') return '#157a4a';
+  return '#b8720e';
+};
+
+const RecentActivityPanel = ({ navigate }) => {
+  const { data, loading, error } = useMgrRecentActivity(5);
+  const openActivity = (item) => {
+    const link = item.linkTo || '';
+    if (link.includes('equipment')) navigate({ page: 'lab_equipment' });
+    else if (link.includes('samples/') && link.split('/').pop()) navigate({ page: 'lab_wafer', id: link.split('/').pop() });
+    else if (link.includes('samples')) navigate({ page: 'lab_samples' });
+    else navigate({ page: 'mgr_notifications' });
+  };
+  return (
+    <Card padding={0} style={{ height: '100%' }}>
+      <CardHeader>
+        <MI.Bell size={13} color={mAccent}/>
+        <span>Recent activity</span>
+        <button onClick={() => navigate({ page: 'mgr_notifications' })} style={{
+          marginLeft: 'auto', border: 'none', background: 'transparent', color: mAccent,
+          fontSize: 12, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit',
+        }}>View all</button>
+      </CardHeader>
+      {loading ? (
+        <div style={{ padding: 22, fontSize: 13, color: mMuted }}>Loading activity…</div>
+      ) : error ? (
+        <div style={{ margin: 16, padding: 12, borderRadius: 10, background: '#fde4e4', color: '#c0394a', fontSize: 13 }}>Couldn't load activity: {error}</div>
+      ) : data.length === 0 ? (
+        <div style={{ padding: 22, fontSize: 13, color: mMuted }}>No recent activity in the last 24 hours.</div>
+      ) : data.map(item => (
+        <button key={item.id} onClick={() => openActivity(item)} style={{
+          width: '100%', border: 'none', borderTop: `1px solid ${mLineSft}`, background: '#fff',
+          display: 'grid', gridTemplateColumns: '12px 1fr auto', gap: 12, alignItems: 'start',
+          padding: '14px 18px', textAlign: 'left', cursor: 'pointer', fontFamily: 'inherit',
+        }}
+          onMouseEnter={(e) => e.currentTarget.style.background = '#fafafd'}
+          onMouseLeave={(e) => e.currentTarget.style.background = '#fff'}
+        >
+          <span style={{ width: 9, height: 9, marginTop: 4, borderRadius: 999, background: activityTone(item.type) }}/>
+          <span>
+            <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: mInk }}>{item.label}</span>
+            <span style={{ display: 'block', fontSize: 11.5, color: mMuted, marginTop: 3 }}>{item.type.replaceAll('_', ' ')}</span>
+          </span>
+          <span style={{ fontSize: 11.5, color: mMuted, whiteSpace: 'nowrap' }}>{relativeTime(item.timestamp)}</span>
+        </button>
+      ))}
+    </Card>
+  );
+};
+
 // ── Resource utilization / capacity trend ──────────────────────
 // Dual-line area chart: daily dispatch volume (blue) + average equipment
-// utilization (violet). Data is synthesized — seeded from request submitted
-// dates so peaks line up with the demo data.
-const DEMO_TODAY = '2026-05-19';
-const ymd = (s) => s;
-const dayDiff = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000);
-const addDays = (s, n) => {
-  const d = new Date(s);
-  d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
-};
+// utilization (violet), sourced from `/api/dashboard/chart`.
 
 // Catmull-Rom → cubic Bezier smoothing for the chart lines.
 const smoothPath = (pts) => {
@@ -1705,26 +1882,31 @@ const smoothPath = (pts) => {
   return d;
 };
 
+const ChartToggle = ({ active, children, onClick }) => (
+  <button onClick={onClick} style={{
+    padding: '6px 10px', borderRadius: 999, border: `1px solid ${active ? 'rgba(108,103,184,0.42)' : 'transparent'}`,
+    background: active ? '#ecebf3' : 'transparent', color: active ? '#4f4a8f' : mText2,
+    fontSize: 12, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit',
+  }}>{children}</button>
+);
+
 const TrendChart = () => {
-  // Backend `/reports/trends` is `days`-based, not range-based — drop the
-  // date pickers in favor of a fixed 30-day rolling window.
-  const { data: trend, loading, error } = useMgrTrend('requests_per_day', 30);
-
-  // Derive the chart series. `days` is an array of {date, dispatches,
-  // utilization}; "utilization" is a smoothed multiplier of the count
-  // (kept from the mock UI for the two-line visual — gap §4's trends
-  // endpoint only ships request volume, not real equipment usage).
+  const [metric, setMetric] = mS('samples');
+  const [range, setRange] = mS('30d');
+  const { data: chart, loading, error } = useMgrDashboardChart(metric, range);
   const days = mM(() => {
-    const points = trend?.points || [];
-    const arr = points.map(p => ({ date: p.date, dispatches: p.count }));
-    for (let i = 0; i < arr.length; i++) {
-      const prev = i > 0 ? arr[i - 1].dispatches : 0;
-      arr[i].utilization = Math.min(100, (arr[i].dispatches * 0.6 + prev * 0.4) * 24);
-    }
-    return arr;
-  }, [trend]);
+    const labels = chart?.labels || [];
+    const counts = chart?.dailyCount || [];
+    const util = chart?.utilizationPct || [];
+    return labels.map((label, i) => ({
+      date: label,
+      dispatches: Number(counts[i] || 0),
+      utilization: Math.min(100, Math.round(Number(util[i] || 0) * 100)),
+      anomaly: (chart?.anomalies || []).some(a => a.date === label),
+    }));
+  }, [chart]);
 
-  if (loading && !trend) {
+  if (loading && !chart) {
     return (
       <Card padding={22} style={{ marginTop: 18, textAlign: 'center', color: mMuted, fontSize: 13 }}>
         Loading trend…
@@ -1773,7 +1955,7 @@ const TrendChart = () => {
   const ticks = days.map((d, i) => ({ i, label: d.date.slice(5).replace('-', '/'), show: i === 0 || i === days.length - 1 || i % tickStep === 0 }));
 
   return (
-    <Card padding={0} style={{ marginTop: 18 }}>
+    <Card padding={0}>
       <div style={{
         padding: '18px 22px', borderBottom: `1px solid ${mLineSft}`,
         display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
@@ -1783,10 +1965,19 @@ const TrendChart = () => {
           <div style={{ fontSize: 15, fontWeight: 700, color: mInk, letterSpacing: '-0.01em' }}>資源利用 / 產能趨勢</div>
           <div style={{ fontSize: 12, color: mMuted, marginTop: 2 }}>設備稼動率與每日派工量</div>
         </div>
-        <div style={{
-          marginLeft: 'auto', fontSize: 12, color: mMuted, fontWeight: 600,
-          padding: '6px 12px', borderRadius: 999, background: mBgSoft, border: `1px solid ${mLineSft}`,
-        }}>Last {trend?.days ?? 30} days</div>
+        <div style={{ marginLeft: 'auto', display: 'inline-flex', gap: 4, padding: 3, borderRadius: 999, background: mBgSoft, border: `1px solid ${mLineSft}` }}>
+          <ChartToggle active={metric === 'samples'} onClick={() => setMetric('samples')}>Samples</ChartToggle>
+          <ChartToggle active={metric === 'wip'} onClick={() => setMetric('wip')}>WIP</ChartToggle>
+          <ChartToggle active={metric === 'equipment'} onClick={() => setMetric('equipment')}>Equipment</ChartToggle>
+        </div>
+        <select value={range} onChange={(e) => setRange(e.target.value)} style={{
+          fontSize: 12, color: mText2, fontWeight: 700, padding: '7px 10px', borderRadius: 999,
+          background: '#fff', border: `1px solid ${mLineSft}`, fontFamily: 'inherit',
+        }}>
+          <option value="7d">Last 7 days</option>
+          <option value="30d">Last 30 days</option>
+          <option value="90d">Last 90 days</option>
+        </select>
       </div>
 
       <div style={{ padding: '14px 22px 20px' }}>
@@ -1835,6 +2026,18 @@ const TrendChart = () => {
           {/* Lines */}
           <path d={dispatchPath} fill="none" stroke="#2563eb" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"/>
           <path d={utilPath}     fill="none" stroke="#6c67b8" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"/>
+          {days.map((d, i) => d.anomaly && (
+            <circle key={`a-${d.date}`} cx={x(i)} cy={yDispatch(d.dispatches)} r="4.5" fill="#c0394a">
+              <title>{`Spike detected on ${d.date}`}</title>
+            </circle>
+          ))}
+          {days.map((d, i) => (
+            <g key={`h-${d.date}`}>
+              <rect x={x(i) - 9} y={PT} width="18" height={chartH} fill="transparent">
+                <title>{`${d.date}\nDaily dispatches: ${d.dispatches}\nUtilization: ${d.utilization}%`}</title>
+              </rect>
+            </g>
+          ))}
 
           {/* X-axis ticks */}
           {ticks.map(t => t.show && (
@@ -1848,6 +2051,8 @@ const TrendChart = () => {
 
 const MgrDashboard = ({ navigate }) => {
   const { requests, equipmentCount, loading: countsLoading, error: countsError } = useMgrDashboardData();
+  const { data: stats, loading: statsLoading, error: statsError } = useMgrDashboardStats('30d');
+  const { data: equipmentAlerts } = useMgrEquipmentAlerts();
   const groupedRequests = mM(() => groupMgrRequests(requests), [requests]);
   const pending = groupedRequests.filter(r => r.status === 'submitted');
   const inProgress = groupedRequests.filter(r => r.status === 'in_progress').length;
@@ -1855,50 +2060,78 @@ const MgrDashboard = ({ navigate }) => {
 
   // Show "—" while the initial fetch is in flight rather than the
   // misleading "0" that an empty filter would produce.
-  const initialLoad = countsLoading && requests.length === 0;
-  const v = (n) => initialLoad ? '—' : n;
+  const initialLoad = (countsLoading || statsLoading) && requests.length === 0 && !stats;
+  const statValue = (key, fallback) => initialLoad ? '—' : (stats?.[key]?.current ?? fallback);
 
   return (
     <Page
       title="Dashboard"
       subtitle="Welcome back, lab_manager"
     >
-      {countsError && (
+      {(countsError || statsError) && (
         <div style={{
           padding: '12px 16px', marginBottom: 14, borderRadius: 10,
           background: '#fde4e4', color: '#c0394a', fontSize: 13.5, fontWeight: 500,
           border: '1px solid #f6c4c4',
         }}>
-          Couldn't load tile counts: {countsError}
+          Couldn't load dashboard data: {countsError || statsError}
         </div>
       )}
       {/* To approve first \u2014 it's the manager's primary action. */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 22 }}>
         <MgrStatTile
-          label="To approve" value={v(pending.length)}
+          label="To approve" value={statValue('toApprove', pending.length)}
           icon={<MI.Clock size={16}/>} tint="#fef0d4" accent="#b8720e"
-          onClick={() => navigate({ page: 'mgr_all_requests' })}
+          delta={stats?.toApprove} inverseGood
+          onClick={() => navigate({ page: 'mgr_all_requests', tab: 'submitted' })}
         />
         <MgrStatTile
-          label="In Progress" value={v(inProgress)}
+          label="In Progress" value={statValue('inProgress', inProgress)}
           icon={<MI.Activity size={16}/>} tint="#ecebf3" accent="#5550a0"
-          onClick={() => navigate({ page: 'mgr_all_requests' })}
+          delta={stats?.inProgress} inverseGood
+          onClick={() => navigate({ page: 'lab_wip' })}
         />
         <MgrStatTile
-          label="Completed" value={v(completed)}
+          label="Completed" value={statValue('completed', completed)}
           icon={<MI.CircleCheck size={16}/>} tint="#dbeafe" accent="#1d4ed8"
-          onClick={() => navigate({ page: 'mgr_all_requests', tab: 'completed' })}
+          delta={stats?.completed}
+          onClick={() => navigate({ page: 'lab_samples', tab: 'completed' })}
         />
         <MgrStatTile
-          label="Equipment" value={v(equipmentCount)}
+          label="Equipment" value={statValue('equipment', equipmentCount)}
           icon={<MI.Equipment size={16}/>} tint="#ecebf3" accent="#4f4a8f"
+          delta={stats?.equipment}
           onClick={() => navigate({ page: 'lab_equipment' })}
+        />
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14, marginBottom: 22 }}>
+        <ShortcutCard
+          icon={<MI.FilePlus size={17}/>}
+          label="New sample request"
+          subtitle="Submit for testing"
+          onClick={() => navigate({ page: 'lab_sample_new' })}
+        />
+        <ShortcutCard
+          icon={<MI.ClipboardList size={17}/>}
+          label="Pending approvals"
+          subtitle="Review and approve"
+          badge={pending.length}
+          onClick={() => navigate({ page: 'mgr_all_requests', tab: 'submitted' })}
+        />
+        <ShortcutCard
+          icon={<MI.Alert size={17}/>}
+          label="Equipment alerts"
+          subtitle="Check flagged items"
+          badge={equipmentAlerts?.count || 0}
+          onClick={() => navigate({ page: 'lab_equipment', tab: 'alerts' })}
         />
       </div>
 
       <Card padding={0} style={{
         borderColor: 'rgba(108,103,184,0.32)',
         boxShadow: '0 8px 28px -18px rgba(108,103,184,0.45)',
+        marginBottom: 18,
       }}>
         <CardHeader style={{
           background: 'linear-gradient(90deg, rgba(244,168,191,0.12), rgba(187,183,232,0.12))',
@@ -1950,7 +2183,10 @@ const MgrDashboard = ({ navigate }) => {
         ))}
       </Card>
 
-      <TrendChart/>
+      <div className="lims-manager-dashboard-grid" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.85fr) minmax(280px, 1fr)', gap: 18, alignItems: 'stretch' }}>
+        <TrendChart/>
+        <RecentActivityPanel navigate={navigate}/>
+      </div>
     </Page>
   );
 };

@@ -4348,6 +4348,8 @@ const LabApp = ({ route, navigate, canManage = false }) => {
   const p = route.page;
   if (p === 'lab_dashboard' || p === 'dashboard')
     page = <LabDashboard navigate={navigate}/>;
+  else if (p === 'lab_sample_new')
+    page = <LabSamples navigate={navigate} defaultTab="incoming" showToast={showToast}/>;
   else if (p === 'lab_samples' || p === 'samples')
     page = <LabSamples navigate={navigate} defaultTab={route.tab || 'all'} showToast={showToast}/>;
   else if (p === 'lab_wafer')

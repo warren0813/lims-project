@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from builtins import range as builtins_range
 from datetime import timedelta
 from statistics import mean, pstdev
 
@@ -87,11 +88,11 @@ def _daily_series(qs, date_field: str, days: int) -> dict[str, int]:
 def dashboard_chart(
     request: HttpRequest,
     metric: str = Query("samples"),
-    range: str = Query("30d"),  # noqa: A002
+    range_: str = Query("30d", alias="range"),
 ):
     if not has_lab_role(request):
         return 403, {"detail": "Permission denied"}
-    days = _period_days(range)
+    days = _period_days(range_)
     if metric == "wip":
         series = _daily_series(WipBatch.objects.all(), "created_at", days)
     elif metric == "equipment":
@@ -99,7 +100,7 @@ def dashboard_chart(
     else:
         series = _daily_series(Sample.objects.all(), "created_at", days)
     start = timezone.now().date() - timedelta(days=days - 1)
-    labels = [str(start + timedelta(days=i)) for i in range(days)]
+    labels = [str(start + timedelta(days=i)) for i in builtins_range(days)]
     daily_count = [series.get(label, 0) for label in labels]
     capacity = max(Equipment.objects.filter(is_active=True).count(), 1)
     utilization = [round(value / capacity, 2) for value in daily_count]
