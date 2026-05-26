@@ -115,6 +115,31 @@ def sample_out(sample: Sample) -> dict[str, Any]:
     }
 
 
+def status_history_out(req: CommissionRequest) -> list[dict[str, Any]]:
+    return [
+        {
+            "previous_status": item.previous_status,
+            "new_status": item.new_status,
+            "actor": user_brief(item.actor),
+            "reason": item.reason,
+            "created_at": item.created_at,
+        }
+        for item in req.status_history.all()
+    ]
+
+
+def approval_records_out(req: CommissionRequest) -> list[dict[str, Any]]:
+    return [
+        {
+            "reviewer": user_brief(record.reviewer),
+            "decision": record.decision,
+            "comment": record.comment,
+            "created_at": record.created_at,
+        }
+        for record in req.approval_records.all()
+    ]
+
+
 def request_out(req: CommissionRequest, *, include_detail: bool = True) -> dict[str, Any]:
     samples = list(req.samples.all())
     all_experiments = []
@@ -154,6 +179,7 @@ def request_out(req: CommissionRequest, *, include_detail: bool = True) -> dict[
         "approved_by": user_brief(req.approved_by),
         "assigned_lab_user": user_brief(req.assigned_lab_user),
         "manager_comment": req.manager_comment,
+        "closed_at": req.closed_at,
         "sample_count": req.samples.count(),
         "wafer_progress": {
             "total": len(samples),
@@ -166,8 +192,8 @@ def request_out(req: CommissionRequest, *, include_detail: bool = True) -> dict[
         "experiment_progress": progress,
         "safe_to_close": progress["all_done"],
         "samples": [],
-        "approval_records": [],
-        "status_history": [],
+        "approval_records": approval_records_out(req),
+        "status_history": status_history_out(req),
         "result": None,
         "created_at": req.created_at,
         "updated_at": req.updated_at,
@@ -176,23 +202,4 @@ def request_out(req: CommissionRequest, *, include_detail: bool = True) -> dict[
         return data
 
     data["samples"] = [sample_out(sample) for sample in samples]
-    data["approval_records"] = [
-        {
-            "reviewer": user_brief(record.reviewer),
-            "decision": record.decision,
-            "comment": record.comment,
-            "created_at": record.created_at,
-        }
-        for record in req.approval_records.all()
-    ]
-    data["status_history"] = [
-        {
-            "previous_status": item.previous_status,
-            "new_status": item.new_status,
-            "actor": user_brief(item.actor),
-            "reason": item.reason,
-            "created_at": item.created_at,
-        }
-        for item in req.status_history.all()
-    ]
     return data

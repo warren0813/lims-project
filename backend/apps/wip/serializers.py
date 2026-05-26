@@ -3,7 +3,43 @@ from __future__ import annotations
 from typing import Any
 
 from apps.commissions.serializers import experiment_progress
+from apps.equipment.models import Equipment, EquipmentStatus
 from apps.wip.models import DispatchQueueProposal, WipBatch
+
+
+def _proposal_readiness(batch) -> dict[str, Any]:
+    compatible = Equipment.objects.filter(
+        equipment_type=batch.equipment_type,
+        is_active=True,
+        capability_links__recipe=batch.recipe,
+    ).distinct()
+    compatible_count = compatible.count()
+    idle_count = compatible.filter(status=EquipmentStatus.IDLE).count()
+    if batch.equipment_id and batch.equipment.status == EquipmentStatus.IDLE:
+        status = "ready_to_dispatch"
+        message = "Ready to Dispatch"
+    elif idle_count > 0:
+        status = "ready_to_dispatch"
+        message = "Ready to Dispatch"
+    elif compatible_count == 0:
+        status = "waiting_for_equipment"
+        message = f"Waiting for compatible equipment: {batch.equipment_type.name}"
+    elif batch.equipment_id and batch.equipment.current_dispatch_id:
+        status = "blocked"
+        message = "Current dispatch is running"
+    elif compatible.filter(status=EquipmentStatus.WORKING).exists():
+        status = "waiting_for_equipment"
+        message = "Equipment is running"
+    else:
+        status = "waiting_for_equipment"
+        message = "Equipment under full load"
+    return {
+        "readiness_status": status,
+        "readiness_message": message,
+        "ready_to_dispatch": status == "ready_to_dispatch",
+        "compatible_equipment_count": compatible_count,
+        "available_equipment_count": idle_count,
+    }
 
 
 def wip_out(wip: WipBatch) -> dict[str, Any]:
@@ -127,6 +163,7 @@ def proposal_out(proposal: DispatchQueueProposal) -> dict[str, Any]:
                 "reason": batch.reason,
                 "warnings": batch.warnings,
                 "items": items,
+                **_proposal_readiness(batch),
             }
         )
     return {

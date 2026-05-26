@@ -54,7 +54,7 @@ const useMgrDashboardData = () => {
   const [error, setError] = mS(null);
   const refresh = React.useCallback(() => {
     if (!window.api) { setLoading(false); return; }
-    setLoading(true);
+    if (requests.length === 0 && equipmentCount === 0) setLoading(true);
     Promise.all([
       window.api.requests.list(),
       window.api.equipment.list().catch(() => []),
@@ -66,8 +66,12 @@ const useMgrDashboardData = () => {
       })
       .catch(err => setError(err.message || String(err)))
       .finally(() => setLoading(false));
-  }, []);
+  }, [requests.length, equipmentCount]);
   React.useEffect(() => { refresh(); }, [refresh]);
+  React.useEffect(() => {
+    const h = setInterval(refresh, 3000);
+    return () => clearInterval(h);
+  }, [refresh]);
   return { requests, equipmentCount, loading, error, refresh };
 };
 
@@ -190,10 +194,10 @@ const mgrAggregateStatus = (items) => {
   if (statuses.includes('returned')) return 'returned';
   if (statuses.includes('in_progress') || statuses.includes('waiting_sample_receive') || rawStatuses.includes('final_check')) return 'in_progress';
   if (statuses.includes('submitted')) return 'submitted';
-  if (statuses.every(s => s === 'completed')) return 'completed';
+  if (statuses.every(s => s === 'completed' || s === 'closed')) return 'completed';
   if (statuses.every(s => s === 'draft')) return 'draft';
   if (statuses.every(s => s === 'cancelled')) return 'cancelled';
-  if (statuses.includes('completed')) return 'in_progress';
+  if (statuses.includes('completed') || statuses.includes('closed')) return 'in_progress';
   return statuses[0] || 'submitted';
 };
 const mergeMgrRequests = (items) => {
@@ -526,16 +530,16 @@ const ALL_REQ_TABS = [
   { id: 'pending',     label: 'Pending Approval', filter: (r) => r.status === 'submitted' },
   { id: 'all',         label: 'All',              filter: () => true },
   { id: 'in_progress', label: 'In Progress',      filter: (r) => r.status === 'in_progress' },
-  { id: 'completed',   label: 'Completed',        filter: (r) => r.status === 'completed' },
+  { id: 'completed',   label: 'Completed',        filter: (r) => r.status === 'completed' || r.status === 'closed' },
   { id: 'returned',    label: 'Returned',         filter: (r) => r.status === 'returned' },
   { id: 'rejected',    label: 'Rejected',         filter: (r) => r.status === 'rejected' },
 ];
 
 const findExpById = (id) => MGR_EXPERIMENTS.find(e => e.id === id);
 
-const MgrAllRequests = ({ navigate }) => {
+const MgrAllRequests = ({ navigate, defaultTab = 'pending' }) => {
   const { data: requests, loading, error } = useMgrRequests();
-  const [tab, setTab] = mS('pending');
+  const [tab, setTab] = mS(defaultTab);
   const [expanded, setExpanded] = mS(new Set());
   const groupedRequests = mM(() => groupMgrRequests(requests), [requests]);
   const counts = mM(() => Object.fromEntries(ALL_REQ_TABS.map(t => [t.id, groupedRequests.filter(t.filter).length])), [groupedRequests]);
@@ -1881,6 +1885,7 @@ const MgrDashboard = ({ navigate }) => {
         <MgrStatTile
           label="Completed" value={v(completed)}
           icon={<MI.CircleCheck size={16}/>} tint="#dbeafe" accent="#1d4ed8"
+          onClick={() => navigate({ page: 'mgr_all_requests', tab: 'completed' })}
         />
         <MgrStatTile
           label="Equipment" value={v(equipmentCount)}
@@ -1982,7 +1987,7 @@ const MgrApp = ({ route, navigate }) => {
   let page = null;
   const p = route.page;
   if (p === 'mgr_dashboard')      page = <MgrDashboard navigate={navigate}/>;
-  else if (p === 'mgr_all_requests') page = <MgrAllRequests navigate={navigate}/>;
+  else if (p === 'mgr_all_requests') page = <MgrAllRequests navigate={navigate} defaultTab={route.tab || 'pending'}/>;
   else if (p === 'mgr_request')   page = <MgrRequestDetail id={route.id} navigate={navigate} showToast={showToast}/>;
   else if (p === 'mgr_recipes')   page = <MgrRecipes showToast={showToast}/>;
   else if (p === 'mgr_reports')   page = <MgrReports/>;

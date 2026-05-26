@@ -79,10 +79,70 @@ const useRequests = () => {
   }, []);
   React.useEffect(() => { refresh(); }, [refresh]);
   React.useEffect(() => {
-    const h = setInterval(refresh, 5000);
+    const h = setInterval(refresh, 30000);
     return () => clearInterval(h);
   }, [refresh]);
   return { data, loading, error, refresh };
+};
+
+const useRequestSummary = () => {
+  const [data, setData] = uS(null);
+  const [loading, setLoading] = uS(true);
+  const [error, setError] = uS(null);
+  const refresh = React.useCallback(() => {
+    if (!window.api?.requests?.summary) { setLoading(false); return; }
+    setLoading(true);
+    window.api.requests.summary()
+      .then(s => { setData(s); setError(null); })
+      .catch(err => setError(err.message || String(err)))
+      .finally(() => setLoading(false));
+  }, []);
+  React.useEffect(() => { refresh(); }, [refresh]);
+  React.useEffect(() => {
+    const h = setInterval(refresh, 30000);
+    return () => clearInterval(h);
+  }, [refresh]);
+  return { data, loading, error, refresh };
+};
+
+const useInProgressRequests = () => {
+  const [data, setData] = uS([]);
+  const [loading, setLoading] = uS(true);
+  const [error, setError] = uS(null);
+  const refresh = React.useCallback(() => {
+    if (!window.api?.requests) { setLoading(false); return; }
+    setLoading(true);
+    window.api.requests.list({ status: 'in_progress' })
+      .then(rows => { setData(rows); setError(null); })
+      .catch(err => setError(err.message || String(err)))
+      .finally(() => setLoading(false));
+  }, []);
+  React.useEffect(() => { refresh(); }, [refresh]);
+  React.useEffect(() => {
+    const h = setInterval(refresh, 30000);
+    return () => clearInterval(h);
+  }, [refresh]);
+  return { data, loading, error, refresh };
+};
+
+const useUnreadNotifications = () => {
+  const [items, setItems] = uS([]);
+  const [loading, setLoading] = uS(true);
+  const [error, setError] = uS(null);
+  const refresh = React.useCallback(() => {
+    if (!window.api?.notifications) { setLoading(false); return; }
+    setLoading(true);
+    window.api.notifications.list(true)
+      .then(rows => { setItems(rows); setError(null); })
+      .catch(err => setError(err.message || String(err)))
+      .finally(() => setLoading(false));
+  }, []);
+  React.useEffect(() => { refresh(); }, [refresh]);
+  React.useEffect(() => {
+    const h = setInterval(refresh, 30000);
+    return () => clearInterval(h);
+  }, [refresh]);
+  return { items, loading, error, refresh, setItems };
 };
 
 // Detail fetch for a single request (used by FabRequestDetail). Exposes
@@ -113,6 +173,12 @@ const useRequestDetail = (id) => {
 
 const stripSplitSuffix = (title) => String(title || '').replace(/\s*[·•]\s*\d+\/\d+\s*$/, '').trim();
 const requestGroupKey = (r) => r.groupKey || `${r.requester?.username || ''}|${stripSplitSuffix(r.title).toLowerCase()}|${(r.created || '').slice(0, 10)}`;
+const formatShortTime = (value) => {
+  if (!value) return null;
+  const d = new Date(String(value).replace(' ', 'T'));
+  if (Number.isNaN(d.getTime())) return String(value).split('T')[0] || null;
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
 const aggregateStatus = (items) => {
   const statuses = items.map(r => r.status);
   const rawStatuses = items.map(r => r.rawStatus || r.raw_status || r.status);
@@ -120,10 +186,10 @@ const aggregateStatus = (items) => {
   if (statuses.includes('returned')) return 'returned';
   if (statuses.includes('in_progress') || statuses.includes('waiting_sample_receive') || rawStatuses.includes('final_check')) return 'in_progress';
   if (statuses.includes('submitted')) return 'submitted';
-  if (statuses.every(s => s === 'completed')) return 'completed';
+  if (statuses.every(s => s === 'completed' || s === 'closed')) return 'completed';
   if (statuses.every(s => s === 'draft')) return 'draft';
   if (statuses.every(s => s === 'cancelled')) return 'cancelled';
-  if (statuses.includes('completed')) return 'in_progress';
+  if (statuses.includes('completed') || statuses.includes('closed')) return 'in_progress';
   return statuses[0] || 'submitted';
 };
 const mergeRequests = (items) => {
@@ -461,13 +527,14 @@ const DangerBtn = ({ children, onClick, style }) => (
 
 // ── Dashboard ──────────────────────────────────────────────────
 // Lab-dash–style stat tile: tinted icon swatch + label + big number.
-const FabStatTile = ({ label, value, icon, tint, accent, onClick }) => (
+const FabStatTile = ({ label, value, icon, tint, accent, onClick, description, lastUpdated }) => (
   <button onClick={onClick} style={{
     position: 'relative', textAlign: 'left', padding: '16px 18px',
     borderRadius: 14, background: '#fff',
-    border: '1px solid rgba(0,0,0,0.08)', cursor: 'pointer',
+    border: Number(value) > 0 ? `1px solid ${accent}` : '1px solid rgba(0,0,0,0.08)', cursor: 'pointer',
     fontFamily: 'inherit', overflow: 'hidden',
     transition: 'transform 0.15s, border-color 0.15s, box-shadow 0.15s',
+    boxShadow: Number(value) > 0 ? `0 10px 24px -20px ${accent}` : 'none',
   }}
     onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'rgba(108,103,184,0.35)'; e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 10px 24px -14px rgba(108,103,184,0.35)'; }}
     onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'rgba(0,0,0,0.08)'; e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = 'none'; }}
@@ -484,6 +551,13 @@ const FabStatTile = ({ label, value, icon, tint, accent, onClick }) => (
       fontFamily: 'var(--font-display)', fontSize: 34, fontWeight: 700,
       color: 'var(--text-primary)', letterSpacing: '-0.02em', lineHeight: 1,
     }}>{value}</div>
+    {description && <div style={{ marginTop: 7, fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.35 }}>{description}</div>}
+    {lastUpdated && (
+      <div style={{ marginTop: 9, display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+        <span style={{ width: 6, height: 6, borderRadius: 999, background: Number(value) > 0 ? accent : '#c8c8d2' }}/>
+        Updated {lastUpdated}
+      </div>
+    )}
   </button>
 );
 
@@ -602,31 +676,19 @@ const StatusBars = ({ requests }) => {
   );
 };
 
-// Per-wafer phase pipeline — derived from request + sample status.
-// Phases: Approved → Shipped → Processing → Done.
-const WAFER_PHASES = ['Approved', 'Shipped', 'Received', 'Processing', 'Done'];
+// Request phase pipeline — derived from backend request + wafer status.
+const WAFER_PHASES = ['Submitted', 'Approved', 'Received', 'Processing', 'Done'];
 const phaseIndexFor = (sample, request) => {
-  // Pre-approval states: nothing in the pipeline is true yet. Returning
-  // -1 tells PhasePipeline to leave every dot/connector grey. The adapter
-  // collapses backend `pending_approval` → FE `submitted`, so check both
-  // the rawStatus and the FE status to stay safe across call sites.
-  const rawReq = request.rawStatus || request.status;
-  if (rawReq === 'draft' || rawReq === 'submitted' || rawReq === 'pending_approval') return -1;
-  if (request.status === 'completed' || sample.status === 'completed') return 4;
-  // Processing: sample is in a non-terminal WIP, or backend split/
-  // processing_exception, or backend's explicit `processing` state (set
-  // once the sample enters a dispatch).
-  if (sample.status === 'in_wip'
-      || sample.status === 'processing'
-      || sample.raw_status === 'processing'
-      || sample.raw_status === 'processing_exception'
-      || sample.raw_status === 'split') return 3;
-  // Received: physically at the lab, not yet pulled into a WIP.
-  if (sample.status === 'received' || sample.raw_status === 'received') return 2;
-  // Shipped: backend marked the sample as shipped (request transitioned via /ship).
-  if (sample.raw_status === 'shipped') return 1;
-  // Otherwise we're approved-but-not-yet-shipped (sample still `created`/`incoming`).
-  return 0;
+  const rawReq = request.rawStatus || request.raw_status || request.status;
+  const rawSample = sample.rawStatus || sample.raw_status || sample.status;
+  if (rawReq === 'draft') return -1;
+  if (request.status === 'completed' || request.status === 'closed' || rawReq === 'closed' || rawReq === 'completed' || sample.status === 'completed' || rawSample === 'completed') return 4;
+  if (['in_wip', 'queued', 'running', 'final_check'].includes(rawReq)
+      || ['in_wip', 'queued', 'running', 'processing', 'processing_exception', 'split'].includes(rawSample)) return 3;
+  if (rawReq === 'received' || sample.status === 'received' || rawSample === 'received') return 2;
+  if (['approved', 'waiting_sample_receive'].includes(rawReq) || sample.status === 'incoming' || rawSample === 'pending_receive') return 1;
+  if (['submitted', 'waiting_approval', 'pending_approval'].includes(rawReq) || request.status === 'submitted') return 0;
+  return 1;
 };
 
 const PhasePipeline = ({ idx, compact = false }) => {
@@ -671,35 +733,22 @@ const PhasePipeline = ({ idx, compact = false }) => {
   );
 };
 
-const InProgressRow = ({ request, navigate, open, onToggle }) => {
-  // List endpoint doesn't carry the samples array — `request.sampleCount`
-  // is the only count we have until we load the detail. The detail fetch
-  // is lazy: only when the row is first opened, and cached in local state
-  // so collapsing + re-opening doesn't re-hit the API.
+const InProgressRow = ({ request, navigate }) => {
+  const [open, setOpen] = uS(false);
+  const { data: detail, loading } = useRequestDetail(open ? request.id : null);
+  const row = detail || request;
   const sampleCount = request.sampleCount ?? request.samples?.length ?? 0;
-  const [detail, setDetail] = uS(null);
-  const [detailLoading, setDetailLoading] = uS(false);
-  const [detailError, setDetailError] = uS(null);
-  React.useEffect(() => {
-    if (!open || detail || detailLoading || !window.api?.requests) return;
-    setDetailLoading(true);
-    setDetailError(null);
-    window.api.requests.get(request.id)
-      .then(d => setDetail(d))
-      .catch(e => setDetailError(e.message || String(e)))
-      .finally(() => setDetailLoading(false));
-  }, [open, detail, detailLoading, request.id]);
-
-  const wafers = detail?.samples || [];
+  const wafers = row.samples?.length ? row.samples : (request.samples || []);
   const overallIdx = wafers.length
-    ? Math.min(...wafers.map(s => phaseIndexFor(s, detail || request)))
-    : null;
+    ? Math.min(...wafers.map(s => phaseIndexFor(s, row)))
+    : phaseIndexFor({ status: request.status, raw_status: request.rawStatus }, request);
+  const currentPhase = WAFER_PHASES[Math.max(0, overallIdx)] || 'Submitted';
 
   return (
     <div style={{ borderTop: '1px solid #f5f5f9' }}>
-      <button onClick={onToggle} style={{
+      <button onClick={() => setOpen(v => !v)} style={{
         width: '100%', textAlign: 'left',
-        display: 'grid', gridTemplateColumns: '80px 1fr 130px 130px 24px',
+        display: 'grid', gridTemplateColumns: '90px minmax(260px,1fr) 110px 120px 120px 24px',
         padding: '14px 24px', alignItems: 'center', gap: 16,
         background: '#fff', cursor: 'pointer', transition: 'background 0.1s',
         fontFamily: 'inherit',
@@ -707,68 +756,57 @@ const InProgressRow = ({ request, navigate, open, onToggle }) => {
         onMouseEnter={(e) => e.currentTarget.style.background = '#fafafd'}
         onMouseLeave={(e) => e.currentTarget.style.background = '#fff'}
       >
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--text-muted)' }}>#{request.id}</span>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--text-muted)' }}>{request.requestNo || `#${request.id}`}</span>
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: '#6c67b8' }}>{request.title}</div>
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-            Currently: <span style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>
-              {overallIdx == null ? '—' : (overallIdx >= 0 ? WAFER_PHASES[overallIdx] : '—')}
-            </span>
-          </div>
+          <div style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 3 }}>Currently: <strong style={{ color: 'var(--text-primary)' }}>{currentPhase}</strong></div>
         </div>
         <span style={{ fontSize: 13.5, color: 'var(--text-secondary)' }}>{sampleCount} wafer{sampleCount === 1 ? '' : 's'}</span>
         <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--text-muted)' }}>{request.submitted ? request.submitted.split(' ')[0] : '—'}</span>
-        <F.ChevronDown size={15} color="#a8a8b8" style={{
-          transform: open ? 'rotate(180deg)' : 'rotate(0)',
-          transition: 'transform 0.18s',
-        }}/>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--text-muted)' }}>{request.updated ? request.updated.split(' ')[0] : '—'}</span>
+        <F.ChevronDown size={15} color="#a8a8b8" style={{ transform: open ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.16s' }}/>
       </button>
       {open && (
-        <div style={{ padding: '4px 24px 22px', background: '#fafafd', borderTop: '1px solid #f1f1f5' }}>
+        <div style={{ background: '#fbfbfd', borderTop: '1px solid #f1f1f5', padding: '20px 28px 24px' }}>
           <div style={{
-            fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)',
-            textTransform: 'uppercase', letterSpacing: '0.08em',
-            padding: '14px 0 12px',
+            fontSize: 11, fontWeight: 800, textTransform: 'uppercase',
+            letterSpacing: '0.08em', color: 'var(--text-secondary)', marginBottom: 14,
           }}>Wafer Phases</div>
-          {detailLoading && (
-            <div style={{ padding: '20px 0', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
-              Loading wafer phases…
+          {loading && !detail ? (
+            <div style={{ padding: 16, fontSize: 13, color: 'var(--text-muted)' }}>Loading wafer phases…</div>
+          ) : wafers.length === 0 ? (
+            <div style={{ padding: 16, fontSize: 13, color: 'var(--text-muted)' }}>No wafers found for this request.</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {wafers.map((sample, index) => {
+                const idx = phaseIndexFor(sample, row);
+                return (
+                  <div key={sample.id || index} style={{
+                    display: 'grid', gridTemplateColumns: '180px minmax(260px, 1fr)', gap: 20,
+                    alignItems: 'center', padding: '14px 18px', borderRadius: 10,
+                    background: '#fff', border: '1px solid #eeeeF5',
+                  }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 800, color: 'var(--text-primary)' }}>
+                        {sample.wafer || sample.sampleNo || sample.id || `Wafer ${index + 1}`}
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+                        {sample.size || sample.material || sample.lot || 'Sample'}
+                      </div>
+                    </div>
+                    <PhasePipeline idx={idx}/>
+                  </div>
+                );
+              })}
             </div>
           )}
-          {detailError && (
-            <div style={{
-              padding: '10px 12px', borderRadius: 8,
-              background: '#fde4e4', color: '#c0394a', fontSize: 13, fontWeight: 500,
-              border: '1px solid #f6c4c4',
-            }}>{detailError}</div>
-          )}
-          {!detailLoading && !detailError && wafers.length === 0 && (
-            <div style={{ padding: '12px 0', color: 'var(--text-muted)', fontSize: 13, fontStyle: 'italic' }}>
-              No wafers on this request.
-            </div>
-          )}
-          {wafers.length > 0 && (
-            <div style={{
-              display: 'grid', gridTemplateColumns: '160px 1fr',
-              alignItems: 'center', gap: 18,
-              padding: '12px 16px',
-              background: '#fff', borderRadius: 10,
-              border: '1px solid rgba(0,0,0,0.06)',
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
+            <button onClick={() => navigate({ page: 'fab_request', id: request.id })} style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6, color: '#6c67b8',
+              fontSize: 13, fontWeight: 800, cursor: 'pointer',
             }}>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>Aggregate status</div>
-                <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>
-                  {wafers.length} wafer{wafers.length === 1 ? '' : 's'}
-                </div>
-              </div>
-              <PhasePipeline idx={overallIdx}/>
-            </div>
-          )}
-          <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end' }}>
-            <button onClick={(e) => { e.stopPropagation(); navigate({ page: 'fab_request', id: request.id }); }} style={{
-              fontSize: 13, fontWeight: 600, color: '#6c67b8',
-              display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer',
-            }}>Open request <F.ArrowRight size={13}/></button>
+              Open request <F.ArrowRight size={14}/>
+            </button>
           </div>
         </div>
       )}
@@ -778,26 +816,33 @@ const InProgressRow = ({ request, navigate, open, onToggle }) => {
 
 const FabDashboard = ({ navigate }) => {
   const { data: requests, loading, error } = useRequests();
+  const { data: summary } = useRequestSummary();
+  const { data: inProgressRows, error: inProgressError } = useInProgressRequests();
+  const { items: unreadNotifications, refresh: refreshUnread, setItems: setUnreadNotifications } = useUnreadNotifications();
   const groupedRequests = uM(() => groupRequests(requests), [requests]);
-  const inProgress = groupedRequests.filter(r => r.status === 'in_progress').slice(0, 5);
+  const inProgress = (inProgressRows.length ? groupRequests(inProgressRows) : groupedRequests.filter(r => r.status === 'in_progress')).slice(0, 5);
   const drafts = groupedRequests.filter(r => r.status === 'draft');
   const attention = groupedRequests.filter(r => r.status === 'returned' || r.status === 'rejected').slice(0, 3);
   const waitingApproval = groupedRequests.filter(r => r.status === 'submitted');
-  // Accordion exclusivity: only one row open at a time. `undefined` means
-  // "not yet initialised" (we'll seed it with the first id once the list
-  // resolves); `null` is the user-driven "collapse everything" state and
-  // must persist — don't re-open the first row when that happens.
-  const [expandedId, setExpandedId] = uS(undefined);
-  React.useEffect(() => {
-    if (expandedId === undefined && inProgress.length > 0) setExpandedId(inProgress[0].id);
-  }, [inProgress, expandedId]);
+  const [activityOpen, setActivityOpen] = uS(false);
+  const summaryCards = summary?.cards || {};
+  const summaryUpdated = formatShortTime(summary?.last_updated || summary?.generated_at);
+  const cardValue = (key, fallback) => summaryCards[key]?.count ?? fallback;
+  const cardDesc = (key, fallback) => summaryCards[key]?.description || fallback;
+  const dismissNotifications = async () => {
+    const rows = unreadNotifications.slice();
+    setUnreadNotifications([]);
+    await Promise.all(rows.map(n => window.api.notifications.markRead(n.id).catch(() => null)));
+    window.dispatchEvent(new Event('lims:notifications-updated'));
+    refreshUnread();
+  };
   const activity = uM(() => {
     const normalizeAction = (action, request) => {
       const a = String(action || '').toLowerCase();
       if (a === 'cancel' || a.includes('cancelled')) return null;
       if (a.includes('rejected')) return 'REJECT';
       if (a.includes('returned') || a.includes('more_info')) return 'RETURN';
-      if (a.includes('completed') || request?.status === 'completed') return 'COMPLETED';
+      if (a.includes('completed') || a.includes('closed') || request?.status === 'completed' || request?.status === 'closed') return 'COMPLETED';
       if (a === 'approve' || a.includes('approved') || a.includes('waiting_sample_receive')) return request?.status === 'in_progress' ? 'APPROVE_DISPATCH' : 'APPROVE';
       if (a.includes('received') || a.includes('in_wip') || a.includes('queued') || a.includes('running') || a.includes('final_check')) return 'RECEIVE';
       if (a.includes('submitted')) return 'SUBMIT';
@@ -839,6 +884,41 @@ const FabDashboard = ({ navigate }) => {
     );
   }
 
+  if (!error && groupedRequests.length === 0) {
+    return (
+      <FabPage
+        title="Dashboard"
+        subtitle="Welcome back, fab_user"
+        right={<PrimaryBtn icon={<F.Plus size={16}/>} onClick={() => navigate({ page: 'fab_new' })}>New Request</PrimaryBtn>}
+      >
+        <FabCard padding={28} style={{ marginBottom: 18, display: 'grid', gridTemplateColumns: '1fr auto', gap: 20, alignItems: 'center' }}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--text-primary)' }}>No requests yet</div>
+            <div style={{ fontSize: 13.5, color: 'var(--text-muted)', marginTop: 6, lineHeight: 1.5 }}>
+              Create a new request to submit wafers for lab processing.
+            </div>
+          </div>
+          <PrimaryBtn icon={<F.Plus size={16}/>} onClick={() => navigate({ page: 'fab_new' })}>Create Request</PrimaryBtn>
+        </FabCard>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
+          {[
+            ['Recent activity', 'Approvals, receives, and completed work will appear here.'],
+            ['In-progress requests', 'Accepted wafers will show phase progress here.'],
+            ['Needs attention', 'Returned or rejected requests will be highlighted here.'],
+          ].map(([title, body]) => (
+            <FabCard key={title} padding={22} style={{ minHeight: 150, background: '#fbfbfd', borderStyle: 'dashed' }}>
+              <div style={{ width: 36, height: 36, borderRadius: 8, background: '#ecebf3', display: 'grid', placeItems: 'center', marginBottom: 14 }}>
+                <F.CircleAlert size={18} color="#6c67b8"/>
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--text-primary)' }}>{title}</div>
+              <div style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 6, lineHeight: 1.5 }}>{body}</div>
+            </FabCard>
+          ))}
+        </div>
+      </FabPage>
+    );
+  }
+
   return (
     <FabPage
       title="Dashboard"
@@ -854,26 +934,72 @@ const FabDashboard = ({ navigate }) => {
           Failed to load requests: {error}
         </div>
       )}
+      {inProgressError && (
+        <div style={{
+          padding: '12px 16px', marginBottom: 14, borderRadius: 10,
+          background: '#fde4e4', color: '#c0394a', fontSize: 13.5, fontWeight: 500,
+          border: '1px solid #f6c4c4',
+        }}>
+          Failed to load in-progress requests: {inProgressError}
+        </div>
+      )}
+      {unreadNotifications.length > 0 && (
+        <FabCard padding={0} style={{ marginBottom: 18, overflow: 'hidden', borderColor: '#f0d38a', background: '#fffdf7' }}>
+          <div style={{ padding: '14px 18px', display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 12, alignItems: 'center' }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--text-primary)' }}>
+                You have {unreadNotifications.length} notification{unreadNotifications.length === 1 ? '' : 's'} that may need your attention
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
+                {unreadNotifications.slice(0, 3).map(n => (
+                  <div key={n.id} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12.5, color: 'var(--text-secondary)' }}>
+                    <span style={{ width: 6, height: 6, borderRadius: 999, background: '#b8720e' }}/>
+                    <span style={{ flex: 1 }}>{n.title || n.body}</span>
+                    <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>{formatShortTime(n.createdAt)}</span>
+                    {n.relatedRequestId && (
+                      <button onClick={() => navigate({ page: 'fab_request', id: n.relatedRequestId })} style={{ color: '#6c67b8', fontWeight: 700, cursor: 'pointer' }}>
+                        Open request
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <SecondaryBtn onClick={() => navigate({ page: 'fab_notifications' })}>View all</SecondaryBtn>
+            <button onClick={dismissNotifications} title="Dismiss" style={{ width: 32, height: 32, display: 'grid', placeItems: 'center', borderRadius: 8, color: 'var(--text-muted)', cursor: 'pointer' }}>
+              <F.X size={15}/>
+            </button>
+          </div>
+        </FabCard>
+      )}
       {/* Top stat tiles — mirrors the lab dashboard's quick counts */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 18 }}>
         <FabStatTile
-          label="Waiting Approval" value={waitingApproval.length}
+          label="Waiting Approval" value={cardValue('waiting_approval', waitingApproval.length)}
           icon={<F.Clock size={16}/>} tint="#fef0d4" accent="#b8720e"
+          description={cardDesc('waiting_approval', 'Awaiting lab approval')}
+          lastUpdated={summaryUpdated}
           onClick={() => navigate({ page: 'fab_requests', tab: 'all' })}
         />
         <FabStatTile
-          label="In Progress" value={inProgress.length}
+          label="In Progress" value={cardValue('in_progress', inProgress.length)}
           icon={<F.Activity size={16}/>} tint="#ecebf3" accent="#5550a0"
+          description={cardDesc('in_progress', 'Active lab processing')}
+          lastUpdated={summaryUpdated}
           onClick={() => navigate({ page: 'fab_requests', tab: 'in_progress' })}
         />
         <FabStatTile
-          label="Needs Attention" value={attention.length}
+          label="Needs Attention" value={cardValue('needs_attention', attention.length)}
           icon={<F.CircleAlert size={16}/>} tint="#fceef2" accent="#a73d56"
+          description={cardDesc('needs_attention', 'Returned or rejected items')}
+          lastUpdated={summaryUpdated}
           onClick={() => navigate({ page: 'fab_requests', tab: 'returned' })}
         />
         <FabStatTile
-          label="Drafts" value={drafts.length}
+          label="Drafts" value={cardValue('drafts', drafts.length)}
           icon={<F.FilePlus size={16}/>} tint="#e3eef3" accent="#2a7a91"
+          description={cardDesc('drafts', 'Saved, not submitted')}
+          lastUpdated={summaryUpdated}
           onClick={() => navigate({ page: 'fab_drafts' })}
         />
       </div>
@@ -888,23 +1014,29 @@ const FabDashboard = ({ navigate }) => {
           accentLight="#d6d3f0"
           right={<HeaderLinkButton accent="#bbb7e8" onClick={() => navigate({ page: 'fab_requests', tab: 'in_progress' })}>View all <F.ArrowRight size={13}/></HeaderLinkButton>}
         />
-        <div style={{
-          display: 'grid', gridTemplateColumns: '80px 1fr 130px 130px 24px',
-          padding: '10px 24px', borderTop: '1px solid #f1f1f5',
-          fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)',
-          textTransform: 'uppercase', letterSpacing: '0.06em', gap: 16,
-        }}>
-          <div>ID</div><div>Title · Phase</div><div>Wafers</div><div>Submitted</div><div/>
-        </div>
-        {inProgress.map(r => (
-          <InProgressRow
-            key={r.id}
-            request={r}
-            navigate={navigate}
-            open={expandedId === r.id}
-            onToggle={() => setExpandedId(prev => prev === r.id ? null : r.id)}
-          />
-        ))}
+        {inProgress.length > 0 ? (
+          <>
+            <div style={{
+              display: 'grid', gridTemplateColumns: '90px minmax(260px,1fr) 110px 120px 120px 24px',
+              padding: '10px 24px', borderTop: '1px solid #f1f1f5',
+              fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)',
+              textTransform: 'uppercase', letterSpacing: '0.06em', gap: 16,
+            }}>
+              <div>ID</div><div>Request · Phase</div><div>Wafers</div><div>Submitted</div><div>Last Updated</div><div/>
+            </div>
+            {inProgress.map(r => <InProgressRow key={r.id} request={r} navigate={navigate}/>)}
+          </>
+        ) : (
+          <div style={{ padding: '38px 24px', textAlign: 'center', borderTop: '1px solid #f1f1f5' }}>
+            <div style={{ width: 48, height: 48, borderRadius: 12, background: '#ecebf3', display: 'grid', placeItems: 'center', margin: '0 auto 12px' }}>
+              <F.Activity size={22} color="#6c67b8"/>
+            </div>
+            <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--text-primary)' }}>No active experiments yet</div>
+            <div style={{ marginTop: 10 }}>
+              <PrimaryBtn icon={<F.Plus size={14}/>} onClick={() => navigate({ page: 'fab_new' })}>New Request</PrimaryBtn>
+            </div>
+          </div>
+        )}
       </FabCard>
 
       {/* Two-up: Needs Attention + Quick navigation to Drafts */}
@@ -920,8 +1052,10 @@ const FabDashboard = ({ navigate }) => {
           />
           <div>
             {attention.length === 0 ? (
-              <div style={{ padding: '28px 20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
-                Nothing flagged. Good work.
+              <div style={{ margin: 18, padding: '22px 20px', textAlign: 'center', color: '#157a4a', fontSize: 13, background: '#e7f6ec', borderRadius: 10, border: '1px solid #bfe8ce' }}>
+                <F.Check size={16} color="#157a4a"/>
+                <div style={{ marginTop: 8, fontWeight: 800 }}>Nothing flagged</div>
+                <div style={{ marginTop: 4, color: '#2e6a47' }}>All requests look clear.</div>
               </div>
             ) : attention.map((r) => (
               <button key={r.id} onClick={() => navigate({ page: 'fab_request', id: r.id })} style={{
@@ -959,12 +1093,9 @@ const FabDashboard = ({ navigate }) => {
           <div>
             {drafts.length === 0 ? (
               <div style={{ padding: '28px 20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
-                No drafts saved.
+                <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--text-primary)' }}>Ready to run an experiment?</div>
                 <div style={{ marginTop: 10 }}>
-                  <button onClick={() => navigate({ page: 'fab_new' })} style={{
-                    fontSize: 13, fontWeight: 600, color: '#6c67b8',
-                    display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer',
-                  }}><F.Plus size={13}/> Start a new request</button>
+                  <PrimaryBtn icon={<F.Plus size={14}/>} onClick={() => navigate({ page: 'fab_new' })}>Start a new request</PrimaryBtn>
                 </div>
               </div>
             ) : drafts.slice(0, 4).map((r) => (
@@ -1005,7 +1136,23 @@ const FabDashboard = ({ navigate }) => {
           }}>Last 5 events</span>}
         />
 
-        <div style={{ padding: '24px 28px 26px' }}>
+        {activity.length === 0 ? (
+          <>
+            <button onClick={() => setActivityOpen(v => !v)} style={{
+              height: 48, width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '0 20px', borderTop: '1px solid #f1f1f5', background: '#fff', cursor: 'pointer',
+              fontFamily: 'inherit', color: 'var(--text-secondary)', fontWeight: 700,
+            }}>
+              <span>No activity yet</span>
+              {activityOpen ? <F.ChevronDown size={15}/> : <F.ChevronRight size={15}/>}
+            </button>
+            {activityOpen && (
+              <div style={{ padding: '18px 20px', color: 'var(--text-muted)', fontSize: 13, borderTop: '1px solid #f1f1f5' }}>
+                Activity appears after requests are submitted, approved, received, or completed.
+              </div>
+            )}
+          </>
+        ) : <div style={{ padding: '24px 28px 26px' }}>
           {(() => {
             const STYLES = {
               APPROVE:          { dot: '#1f8a5b', tintBg: '#e8f6ee', tintFg: '#157a4a', verb: 'Approved',     icon: (c) => <F.Check size={12} color={c} strokeWidth={3}/>,    text: (a) => <>{a.request.title} approved by <span style={{ fontFamily: 'var(--font-mono)' }}>{a.by}</span></> },
@@ -1087,7 +1234,7 @@ const FabDashboard = ({ navigate }) => {
               </div>
             );
           })()}
-        </div>
+        </div>}
       </FabCard>
     </FabPage>
   );

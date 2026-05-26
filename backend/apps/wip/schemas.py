@@ -91,6 +91,11 @@ class ProposalBatchOut(Schema):
     equipment_capacity: int | None
     equipment_status: str | None
     equipment_queue_name: str | None
+    readiness_status: str | None = None
+    readiness_message: str | None = None
+    ready_to_dispatch: bool = False
+    compatible_equipment_count: int = 0
+    available_equipment_count: int = 0
     recipe_max_batch_size: int
     priority: str
     order: int

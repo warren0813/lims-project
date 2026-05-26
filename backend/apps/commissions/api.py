@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from django.http import HttpRequest
+from django.db.models import Max
+from django.utils import timezone
 from ninja import Query, Router
 
 from api.schemas import ErrorOut
@@ -42,15 +44,68 @@ def _domain_error(error: DomainError):
 @router.get("/", response={200: list[RequestOut]})
 def list_requests(
     request: HttpRequest,
-    status: RequestStatus | None = Query(None),  # noqa: B008
+    status: str | None = Query(None),  # noqa: B008
 ):
     qs = visible_requests(request.auth).prefetch_related(
         "samples__experiments__experiment_type",
         "samples__experiments__recipe",
     ).order_by("-updated_at", "-submitted_at", "-created_at")
-    if status:
+    if status == "in_progress":
+        qs = qs.filter(
+            status__in=[
+                RequestStatus.SUBMITTED,
+                RequestStatus.WAITING_APPROVAL,
+                RequestStatus.APPROVED,
+                RequestStatus.WAITING_SAMPLE_RECEIVE,
+                RequestStatus.RECEIVED,
+                RequestStatus.IN_WIP,
+                RequestStatus.QUEUED,
+                RequestStatus.RUNNING,
+                RequestStatus.FINAL_CHECK,
+            ]
+        )
+    elif status == "completed":
+        qs = qs.filter(status__in=[RequestStatus.COMPLETED, RequestStatus.CLOSED])
+    elif status:
         qs = qs.filter(status=status)
-    return 200, [request_out(req, include_detail=False) for req in qs]
+    include_detail = status == "in_progress"
+    return 200, [request_out(req, include_detail=include_detail) for req in qs]
+
+
+@router.get("/summary/", response={200: dict})
+def request_summary(request: HttpRequest):
+    qs = visible_requests(request.auth)
+    in_progress_statuses = [
+        RequestStatus.RECEIVED,
+        RequestStatus.IN_WIP,
+        RequestStatus.QUEUED,
+        RequestStatus.RUNNING,
+        RequestStatus.FINAL_CHECK,
+    ]
+    latest = qs.aggregate(latest=Max("updated_at"))["latest"]
+    cards = {
+        "waiting_approval": {
+            "count": qs.filter(status=RequestStatus.WAITING_APPROVAL).count(),
+            "description": "Awaiting lab approval",
+        },
+        "in_progress": {
+            "count": qs.filter(status__in=in_progress_statuses).count(),
+            "description": "Active lab processing",
+        },
+        "needs_attention": {
+            "count": qs.filter(status=RequestStatus.REJECTED).count(),
+            "description": "Returned or rejected items",
+        },
+        "drafts": {
+            "count": qs.filter(status=RequestStatus.DRAFT).count(),
+            "description": "Saved, not submitted",
+        },
+    }
+    return 200, {
+        "cards": cards,
+        "last_updated": latest.isoformat() if latest else None,
+        "generated_at": timezone.now().isoformat(),
+    }
 
 
 @router.get("/my", response={200: list[RequestOut]})

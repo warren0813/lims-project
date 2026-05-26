@@ -32,7 +32,7 @@ REQUEST_TRANSITIONS: dict[str, set[str]] = {
         RequestStatus.QUEUED,
         RequestStatus.RUNNING,
     },
-    "close": {RequestStatus.FINAL_CHECK},
+    "close": {RequestStatus.FINAL_CHECK, RequestStatus.COMPLETED},
 }
 
 # Mapping: action -> target status
@@ -43,7 +43,7 @@ REQUEST_TARGET: dict[str, str] = {
     "reject": RequestStatus.REJECTED,
     "ship": RequestStatus.WAITING_SAMPLE_RECEIVE,
     "cancel": RequestStatus.CANCELLED,
-    "close": RequestStatus.COMPLETED,
+    "close": RequestStatus.CLOSED,
 }
 
 SAMPLE_TRANSITIONS: dict[str, set[str]] = {

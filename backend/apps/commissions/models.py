@@ -25,6 +25,7 @@ class RequestStatus(models.TextChoices):
     RUNNING = "running", "Running"
     FINAL_CHECK = "final_check", "Final Check"
     COMPLETED = "completed", "Completed"
+    CLOSED = "closed", "Closed"
     CANCELLED = "cancelled", "Cancelled"
 
 
@@ -96,6 +97,7 @@ class CommissionRequest(UUIDTimeStampedModel):
         on_delete=models.SET_NULL,
         related_name="assigned_commission_requests",
     )
+    closed_at = models.DateTimeField(null=True, blank=True)
     manager_comment = models.TextField(blank=True)
 
     class Meta:
@@ -196,9 +198,9 @@ class SampleExperiment(UUIDTimeStampedModel):
         db_table = "sample_experiment"
         unique_together = ("sample", "experiment_type")
         indexes = [
-            models.Index(fields=["sample", "sequence"]),
-            models.Index(fields=["experiment_type", "status"]),
-            models.Index(fields=["status", "created_at"]),
+            models.Index(fields=["sample", "sequence"], name="sample_expe_sample__eb79d2_idx"),
+            models.Index(fields=["experiment_type", "status"], name="sample_expe_experim_97e9bc_idx"),
+            models.Index(fields=["status", "created_at"], name="sample_expe_status_5a5a1b_idx"),
         ]
         ordering = ["sequence", "created_at"]
 

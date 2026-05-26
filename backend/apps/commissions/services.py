@@ -24,6 +24,7 @@ from apps.experiments.models import ExperimentType
 
 TERMINAL_REQUEST_STATUSES = {
     RequestStatus.COMPLETED,
+    RequestStatus.CLOSED,
     RequestStatus.REJECTED,
     RequestStatus.CANCELLED,
 }
@@ -45,7 +46,11 @@ def _set_request_status(req, status: str, actor, reason: str = "") -> None:
     if previous == status:
         return
     req.status = status
-    req.save(update_fields=["status", "updated_at"])
+    fields = ["status", "updated_at"]
+    if status == RequestStatus.CLOSED and req.closed_at is None:
+        req.closed_at = timezone.now()
+        fields.append("closed_at")
+    req.save(update_fields=fields)
     RequestStatusHistory.objects.create(
         request=req,
         previous_status=previous,
@@ -370,11 +375,11 @@ def cancel_request(actor, req: CommissionRequest, reason: str) -> CommissionRequ
 def close_request(actor, req: CommissionRequest, note: str = "") -> CommissionRequest:
     if getattr(actor.profile, "role", "") not in {"lab_manager", "admin"}:
         raise DomainError("Permission denied", code="FORBIDDEN")
-    if req.status in TERMINAL_REQUEST_STATUSES:
+    if req.status in TERMINAL_REQUEST_STATUSES and req.status != RequestStatus.COMPLETED:
         raise DomainError("This request is already terminal")
     if not _request_all_experiments_complete(req):
         raise DomainError("Request still has unfinished wafer experiments")
-    _set_request_status(req, RequestStatus.COMPLETED, actor, note or "all wafer experiments complete")
+    _set_request_status(req, RequestStatus.CLOSED, actor, note or "all wafer experiments final-confirmed")
     for sample in req.samples.all():
         _set_sample_status(sample, SampleStatus.COMPLETED, actor, "request closed")
     _audit(actor, "request.close", req, note)

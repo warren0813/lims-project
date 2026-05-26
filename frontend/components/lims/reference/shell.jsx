@@ -17,6 +17,14 @@ const FAB_NAV_ITEMS = [
   { id: 'fab_new',       label: 'New Request', cn: '新申請',   icon: 'Plus' },
 ];
 
+const ROLE_LABELS = {
+  fab_user: 'Requestor',
+  lab_user: 'Lab Member',
+  lab_member: 'Lab Member',
+  lab_manager: 'Manager',
+  admin: 'Admin',
+};
+
 const Sidebar = ({ route, navigate, counts, user, onLogout, navItems = NAV_ITEMS, navSections, sectionLabel = 'Lab Operations', sublabel = 'Lab Operator' }) => {
   const isFab = false; // unified theme
   // If sections supplied, use them. Otherwise wrap navItems as a single section.
@@ -118,8 +126,12 @@ const Sidebar = ({ route, navigate, counts, user, onLogout, navItems = NAV_ITEMS
                   textAlign: 'left', position: 'relative',
                   transition: 'background 0.12s, color 0.12s',
                 }}
-                onMouseEnter={(e) => { if (!active) { e.currentTarget.style.background = 'var(--bg-sidebar-hover)'; } }}
-                onMouseLeave={(e) => { if (!active) { e.currentTarget.style.background = 'transparent'; } }}
+                onMouseEnter={(e) => {
+                  if (!active) e.currentTarget.style.background = 'var(--bg-sidebar-hover)';
+                }}
+                onMouseLeave={(e) => {
+                  if (!active) e.currentTarget.style.background = 'transparent';
+                }}
               >
                 <Icon size={16}/>
                 <span style={{ flex: 1 }}>{item.label}</span>
@@ -130,6 +142,7 @@ const Sidebar = ({ route, navigate, counts, user, onLogout, navItems = NAV_ITEMS
                     color: active ? '#fff' : '#bbbbcc',
                     fontSize: 11, fontWeight: 600, display: 'inline-flex',
                     alignItems: 'center', justifyContent: 'center',
+                    animation: 'pulse 1.4s ease-in-out infinite',
                   }}>{count}</span>
                 )}
               </button>
@@ -155,7 +168,14 @@ const Sidebar = ({ route, navigate, counts, user, onLogout, navItems = NAV_ITEMS
         color: '#fff', fontWeight: 700, fontSize: 14,
       }}>{user?.display?.[0]?.toUpperCase() || 'L'}</div>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ color: '#fff', fontSize: 13.5, fontWeight: 600, lineHeight: 1.3 }}>{user?.display || 'lab_member'}</div>
+        <div style={{ color: '#fff', fontSize: 13.5, fontWeight: 600, lineHeight: 1.3, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{user?.display || 'lab_member'}</span>
+          <span style={{
+            padding: '1px 6px', borderRadius: 999,
+            background: 'rgba(255,255,255,0.10)', color: '#d8d4eb',
+            fontSize: 10, fontWeight: 700, whiteSpace: 'nowrap',
+          }}>{ROLE_LABELS[user?.role] || user?.role || 'User'}</span>
+        </div>
         <div style={{ fontSize: 11, color: isFab ? '#64748b' : '#888899', marginTop: 2 }}>{user?.subtitle || '實驗室成員'}</div>
       </div>
       {onLogout && (

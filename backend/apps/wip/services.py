@@ -10,6 +10,7 @@ from apps.accounts.notifications import notify_role
 from apps.commissions.models import (
     CommissionRequest,
     RequestStatus,
+    RequestStatusHistory,
     Sample,
     SampleExperiment,
     SampleExperimentStatus,
@@ -63,6 +64,21 @@ def _set_wip_status(wip: WipBatch, status: str, actor, reason: str = "") -> None
     wip.save(update_fields=fields)
     WipStatusHistory.objects.create(
         wip=wip,
+        previous_status=previous,
+        new_status=status,
+        actor=actor,
+        reason=reason,
+    )
+
+
+def _set_request_status(request: CommissionRequest, status: str, actor, reason: str = "") -> None:
+    previous = request.status
+    if previous == status:
+        return
+    request.status = status
+    request.save(update_fields=["status", "updated_at"])
+    RequestStatusHistory.objects.create(
+        request=request,
         previous_status=previous,
         new_status=status,
         actor=actor,
@@ -210,8 +226,7 @@ def create_wip(actor, sample_ids: list[str], recipe_id: str, priority: str = "no
             RequestStatus.WAITING_SAMPLE_RECEIVE,
             RequestStatus.RECEIVED,
         }:
-            sample.request.status = RequestStatus.IN_WIP
-            sample.request.save(update_fields=["status", "updated_at"])
+            _set_request_status(sample.request, RequestStatus.IN_WIP, actor, "wip created")
     WipStatusHistory.objects.create(
         wip=wip, previous_status="", new_status=wip.status, actor=actor, reason="created"
     )
@@ -304,7 +319,8 @@ def cancel_wip(actor, wip: WipBatch, reason: str = "") -> WipBatch:
 
 def mark_wip_dispatched(actor, wip: WipBatch) -> None:
     _set_wip_status(wip, WipStatus.DISPATCHING, actor, "dispatch queued")
-    CommissionRequest.objects.filter(wip_items__wip=wip).update(status=RequestStatus.QUEUED)
+    for request in CommissionRequest.objects.filter(wip_items__wip=wip).distinct():
+        _set_request_status(request, RequestStatus.QUEUED, actor, "dispatch queued")
     SampleExperiment.objects.filter(current_wip=wip).update(
         status=SampleExperimentStatus.RUNNING,
         started_at=timezone.now(),
@@ -324,6 +340,38 @@ def _candidate_equipment(recipe: Recipe, reserved_ids: set[str] | None = None) -
         .order_by("equipment_code")
         .first()
     )
+
+
+def _lock_idle_candidate_equipment(recipe: Recipe, reserved_ids: set[str]) -> Equipment | None:
+    return (
+        Equipment.objects.select_for_update()
+        .filter(
+            equipment_type=recipe.equipment_type,
+            is_active=True,
+            status=EquipmentStatus.IDLE,
+            capability_links__recipe=recipe,
+        )
+        .exclude(id__in=reserved_ids)
+        .order_by("equipment_code")
+        .first()
+    )
+
+
+def _proposal_batch_blocker(batch: DispatchQueueProposalBatch) -> str:
+    compatible = Equipment.objects.filter(
+        equipment_type=batch.equipment_type,
+        is_active=True,
+        capability_links__recipe=batch.recipe,
+    ).distinct()
+    if not compatible.exists():
+        return f"Waiting for compatible equipment: {batch.equipment_type.name}"
+    if batch.equipment_id and batch.equipment.current_dispatch_id:
+        return "Current dispatch is running"
+    if compatible.filter(status=EquipmentStatus.WORKING).exists():
+        return "Equipment is running"
+    if compatible.exclude(status=EquipmentStatus.IDLE).exists():
+        return "Equipment under full load"
+    return "Waiting for compatible equipment"
 
 
 def _effective_batch_size(recipe: Recipe) -> int:
@@ -539,16 +587,46 @@ def confirm_proposal(actor, proposal: DispatchQueueProposal) -> list[WipBatch]:
     created: list[WipBatch] = []
     dispatch_plan: list[tuple[str, str | None]] = []
     processed_batch_ids = []
-    for batch in proposal.batches.select_related("recipe", "equipment").prefetch_related("items__sample"):
-        if not batch.equipment_id or batch.equipment.status != EquipmentStatus.IDLE:
-            if batch.equipment_id and batch.equipment.status != EquipmentStatus.IDLE:
+    reserved_equipment_ids: set[str] = set()
+    blockers: list[str] = []
+    for batch in proposal.batches.select_related(
+        "recipe", "equipment", "equipment_type"
+    ).prefetch_related("items__sample"):
+        equipment = batch.equipment
+        if equipment and equipment.status != EquipmentStatus.IDLE:
+            blockers.append(_proposal_batch_blocker(batch))
+            replacement = _lock_idle_candidate_equipment(batch.recipe, reserved_equipment_ids)
+            if replacement:
+                batch.equipment = replacement
+                batch.warnings = [
+                    warning
+                    for warning in batch.warnings
+                    if "equipment" not in warning.lower()
+                ]
+                batch.save(update_fields=["equipment", "warnings", "updated_at"])
+                equipment = replacement
+            else:
                 batch.warnings = [
                     *batch.warnings,
                     "Assigned equipment is no longer idle; leaving this batch planned.",
                 ]
                 batch.equipment = None
                 batch.save(update_fields=["warnings", "equipment", "updated_at"])
-            continue
+                continue
+        if not equipment:
+            equipment = _lock_idle_candidate_equipment(batch.recipe, reserved_equipment_ids)
+            if equipment:
+                batch.equipment = equipment
+                batch.warnings = [
+                    warning
+                    for warning in batch.warnings
+                    if "equipment" not in warning.lower()
+                ]
+                batch.save(update_fields=["equipment", "warnings", "updated_at"])
+            else:
+                blockers.append(_proposal_batch_blocker(batch))
+                continue
+        reserved_equipment_ids.add(str(equipment.id))
         sample_ids = [str(item.sample_id) for item in batch.items.all()]
         if not sample_ids:
             continue
@@ -561,10 +639,11 @@ def confirm_proposal(actor, proposal: DispatchQueueProposal) -> list[WipBatch]:
         )
         lock_wip(actor, wip)
         created.append(wip)
-        dispatch_plan.append((str(wip.id), str(batch.equipment_id)))
+        dispatch_plan.append((str(wip.id), str(equipment.id)))
         processed_batch_ids.append(batch.id)
     if not created:
-        raise DomainError("No current WIP batches are ready to dispatch")
+        message = next((item for item in blockers if item), None)
+        raise DomainError(message or "No current WIP batches are ready to dispatch")
     if processed_batch_ids:
         DispatchQueueProposalBatch.objects.filter(pk__in=processed_batch_ids).delete()
     proposal = DispatchQueueProposal.objects.select_for_update().get(pk=proposal.pk)

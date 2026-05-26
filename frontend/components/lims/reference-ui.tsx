@@ -167,9 +167,11 @@ function useUnreadNotificationCount(enabled: boolean): number {
     }
     refresh()
     const h = setInterval(refresh, 5000)
+    window.addEventListener("lims:notifications-updated", refresh)
     return () => {
       cancelled = true
       clearInterval(h)
+      window.removeEventListener("lims:notifications-updated", refresh)
     }
   }, [enabled])
   return count

@@ -194,6 +194,7 @@ class RequestOut(Schema):
     approved_by: UserBriefOut | None
     assigned_lab_user: UserBriefOut | None
     manager_comment: str
+    closed_at: datetime | None = None
     sample_count: int
     wafer_progress: WaferProgressOut | None = None
     experiment_progress: ExperimentProgressOut | None = None

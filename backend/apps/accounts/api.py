@@ -285,6 +285,22 @@ def _notification_out(item: Notification) -> dict:
             related_sample_no = sample.sample_no
             related_request_id = str(sample.request_id)
             related_request_no = sample.request.request_no
+    elif item.related_entity_type == "DispatchJob" and item.related_entity_id:
+        from apps.dispatch.models import DispatchJob
+
+        dispatch = (
+            DispatchJob.objects.filter(pk=item.related_entity_id)
+            .prefetch_related("wip__items__request")
+            .first()
+        )
+        if dispatch:
+            requests = {
+                row.request_id: row.request.request_no for row in dispatch.wip.items.all()
+            }
+            if len(requests) == 1:
+                req_id, req_no = next(iter(requests.items()))
+                related_request_id = str(req_id)
+                related_request_no = req_no
     return {
         "id": item.pk,
         "notification_type": item.notification_type,
@@ -302,6 +318,20 @@ def _notification_out(item: Notification) -> dict:
     }
 
 
+def _notification_parent_key(item: Notification, data: dict | None = None) -> tuple[str, str]:
+    data = data or _notification_out(item)
+    if data.get("related_request_id"):
+        return (data["notification_type"], f"request:{data['related_request_id']}")
+    if data.get("related_sample_id"):
+        return (data["notification_type"], f"sample:{data['related_sample_id']}")
+    if data.get("related_entity_type") and data.get("related_entity_id"):
+        return (
+            data["notification_type"],
+            f"{data['related_entity_type']}:{data['related_entity_id']}",
+        )
+    return (data["notification_type"], f"notification:{data['id']}")
+
+
 @notification_router.get("/", response={200: list[NotificationOut]})
 def list_notifications(request: HttpRequest, unread: bool | None = Query(None)):  # noqa: B008
     qs = Notification.objects.filter(recipient=request.auth)
@@ -309,16 +339,31 @@ def list_notifications(request: HttpRequest, unread: bool | None = Query(None)):
         qs = qs.filter(is_read=False)
     elif unread is False:
         qs = qs.filter(is_read=True)
-    return 200, [_notification_out(item) for item in qs[:100]]
+    rows = []
+    seen_completed = set()
+    for item in qs[:150]:
+        data = _notification_out(item)
+        key = _notification_parent_key(item, data)
+        if data["notification_type"] == "request.completed" and key in seen_completed:
+            continue
+        if data["notification_type"] == "request.completed":
+            seen_completed.add(key)
+        rows.append(data)
+        if len(rows) >= 100:
+            break
+    return 200, rows
 
 
 @notification_router.get("/unread-count", response={200: dict})
 def unread_count(request: HttpRequest):
-    return 200, {"count": Notification.objects.filter(recipient=request.auth, is_read=False).count()}
+    groups = {
+        _notification_parent_key(item)
+        for item in Notification.objects.filter(recipient=request.auth, is_read=False)[:300]
+    }
+    return 200, {"count": len(groups)}
 
 
-@notification_router.post("/{notification_id}/read", response={200: NotificationOut, 404: ErrorOut})
-def mark_notification_read(request: HttpRequest, notification_id: int):
+def _mark_notification_read(request: HttpRequest, notification_id: int):
     try:
         item = Notification.objects.get(pk=notification_id, recipient=request.auth)
     except Notification.DoesNotExist:
@@ -328,6 +373,16 @@ def mark_notification_read(request: HttpRequest, notification_id: int):
         item.read_at = timezone.now()
         item.save(update_fields=["is_read", "read_at"])
     return 200, _notification_out(item)
+
+
+@notification_router.post("/{notification_id}/read", response={200: NotificationOut, 404: ErrorOut})
+def mark_notification_read(request: HttpRequest, notification_id: int):
+    return _mark_notification_read(request, notification_id)
+
+
+@notification_router.patch("/{notification_id}/read/", response={200: NotificationOut, 404: ErrorOut})
+def patch_notification_read(request: HttpRequest, notification_id: int):
+    return _mark_notification_read(request, notification_id)
 
 
 @notification_router.post("/mark-all-read", response={200: dict})

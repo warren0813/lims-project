@@ -16,6 +16,7 @@ from apps.dispatch.services import (
     dispatch_qs,
     publish_dispatch,
     sync_request_completion,
+    _set_request_status,
 )
 from apps.dispatch.simulator import build_steps, generate_result
 from apps.equipment.models import EquipmentEventLog, EquipmentStatus
@@ -54,6 +55,7 @@ def run_dispatch_job(self, dispatch_id: str) -> dict:
             dispatch.save()
             dispatch.wip.status = WipStatus.RUNNING
             dispatch.wip.save(update_fields=["status", "updated_at"])
+            touched_requests = set()
             for item in dispatch.wip.items.select_related("sample", "request"):
                 item.sample.status = SampleStatus.RUNNING
                 item.sample.save(update_fields=["status", "updated_at"])
@@ -61,8 +63,9 @@ def run_dispatch_job(self, dispatch_id: str) -> dict:
                     status=SampleExperimentStatus.RUNNING,
                     started_at=timezone.now(),
                 )
-                item.request.status = RequestStatus.RUNNING
-                item.request.save(update_fields=["status", "updated_at"])
+                if item.request_id not in touched_requests:
+                    _set_request_status(item.request, RequestStatus.RUNNING, "dispatch running")
+                    touched_requests.add(item.request_id)
             equipment.status = EquipmentStatus.WORKING
             equipment.current_dispatch = dispatch
             equipment.current_step = "Starting"

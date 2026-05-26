@@ -263,6 +263,11 @@ export interface ProposalBatchRow {
   equipmentCapacity?: number | null
   equipmentStatus?: string | null
   equipmentQueueName?: string | null
+  readinessStatus?: string | null
+  readinessMessage?: string | null
+  readyToDispatch?: boolean
+  compatibleEquipmentCount?: number
+  availableEquipmentCount?: number
   recipeMaxBatchSize?: number
   priority: string
   order: number
@@ -317,6 +322,7 @@ const REQUEST_STATUS_MAP: Record<string, string> = {
   running: 'in_progress',
   final_check: 'in_progress',
   completed: 'completed',
+  closed: 'closed',
   failed: 'failed',
   rejected: 'rejected',
   cancelled: 'cancelled',
@@ -553,7 +559,7 @@ function normalizeRequestDetail(r: any): RequestDetail {
       name: e.name,
     })),
     completed_at: null,
-    closed_at: null,
+    closed_at: formatTimestamp(r.closed_at),
     result: r.result,
   }
 }
@@ -682,6 +688,11 @@ function normalizeProposal(p: any): ProposalRow {
       equipmentCapacity: b.equipment_capacity ?? null,
       equipmentStatus: b.equipment_status || null,
       equipmentQueueName: b.equipment_queue_name || null,
+      readinessStatus: b.readiness_status || null,
+      readinessMessage: b.readiness_message || null,
+      readyToDispatch: Boolean(b.ready_to_dispatch),
+      compatibleEquipmentCount: b.compatible_equipment_count ?? 0,
+      availableEquipmentCount: b.available_equipment_count ?? 0,
       recipeMaxBatchSize: b.recipe_max_batch_size,
       priority: b.priority,
       order: b.order,
@@ -1043,6 +1054,9 @@ export const api = {
   },
 
   requests: {
+    async summary(): Promise<any> {
+      return call<any>('/requests/summary/')
+    },
     async list(q: Record<string, string> = {}): Promise<RequestRow[]> {
       const out = await call<any[]>(`/requests/?${new URLSearchParams(q)}`)
       return out.map(normalizeRequestRow)
@@ -1270,7 +1284,7 @@ export const api = {
       return Number(out.count || 0)
     },
     async markRead(id: number): Promise<NotificationRow> {
-      return normalizeNotification(await call<any>(`/notifications/${id}/read`, { method: 'POST' }))
+      return normalizeNotification(await call<any>(`/notifications/${id}/read/`, { method: 'PATCH' }))
     },
     async markAllRead(): Promise<{ updated: number }> {
       return call<any>('/notifications/mark-all-read', { method: 'POST' })

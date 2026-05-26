@@ -7,7 +7,7 @@ from django.utils import timezone
 
 from apps.accounts.models import AuditLog, Role
 from apps.accounts.notifications import notify, notify_role
-from apps.commissions.models import RequestStatus, SampleStatus
+from apps.commissions.models import RequestStatus, RequestStatusHistory, SampleStatus
 from apps.commissions.models import SampleExperimentStatus
 from apps.common.codes import next_business_code
 from apps.common.exceptions import DomainError
@@ -36,7 +36,7 @@ def _logical_request_complete(request) -> bool:
     for sibling in _logical_request_siblings(request):
         if _logical_request_title(sibling.title) != title:
             continue
-        if sibling.status != RequestStatus.COMPLETED:
+        if sibling.status != RequestStatus.CLOSED:
             return False
     return True
 
@@ -52,7 +52,35 @@ def _request_has_open_experiments(request) -> bool:
     ).exists()
 
 
+def _request_has_unconfirmed_completed_dispatches(request) -> bool:
+    return DispatchJob.objects.filter(
+        wip__items__request=request,
+        status=DispatchStatus.COMPLETED,
+        final_confirmed_at__isnull=True,
+    ).exists()
+
+
+def _set_request_status(request, status: str, reason: str = "") -> None:
+    previous = request.status
+    if previous == status:
+        return
+    request.status = status
+    fields = ["status", "updated_at"]
+    if status == RequestStatus.CLOSED and request.closed_at is None:
+        request.closed_at = timezone.now()
+        fields.append("closed_at")
+    request.save(update_fields=fields)
+    RequestStatusHistory.objects.create(
+        request=request,
+        previous_status=previous,
+        new_status=status,
+        actor=None,
+        reason=reason,
+    )
+
+
 def _sync_request_after_final_check(request) -> None:
+    previous = request.status
     if request.samples.filter(status=SampleStatus.RUNNING).exists():
         request.status = RequestStatus.RUNNING
     elif request.samples.filter(status=SampleStatus.QUEUED).exists():
@@ -64,10 +92,26 @@ def _sync_request_after_final_check(request) -> None:
     elif not request.samples.exclude(
         status__in=[SampleStatus.COMPLETED, SampleStatus.FAILED]
     ).exists():
-        request.status = RequestStatus.COMPLETED
+        if _request_has_unconfirmed_completed_dispatches(request):
+            request.status = RequestStatus.FINAL_CHECK
+        else:
+            request.status = RequestStatus.CLOSED
+            if request.closed_at is None:
+                request.closed_at = timezone.now()
     else:
         request.status = RequestStatus.RECEIVED
-    request.save(update_fields=["status", "updated_at"])
+    fields = ["status", "updated_at"]
+    if request.status == RequestStatus.CLOSED:
+        fields.append("closed_at")
+    request.save(update_fields=fields)
+    if previous != request.status:
+        RequestStatusHistory.objects.create(
+            request=request,
+            previous_status=previous,
+            new_status=request.status,
+            actor=None,
+            reason="final confirmation sync",
+        )
 
 
 def dispatch_qs():
@@ -160,11 +204,13 @@ def create_dispatch(actor, wip: WipBatch, equipment_id: str | None = None, *, si
     equipment.current_step = "Queued"
     equipment.error_message = ""
     equipment.save()
+    touched_requests = set()
     for item in wip.items.select_related("sample", "request"):
         item.sample.status = SampleStatus.QUEUED
         item.sample.save(update_fields=["status", "updated_at"])
-        item.request.status = RequestStatus.QUEUED
-        item.request.save(update_fields=["status", "updated_at"])
+        if item.request_id not in touched_requests:
+            _set_request_status(item.request, RequestStatus.QUEUED, "dispatch queued")
+            touched_requests.add(item.request_id)
     mark_wip_dispatched(actor, wip)
     publish_dispatch(dispatch)
     _audit(actor, "dispatch.create", dispatch)
@@ -267,20 +313,18 @@ def sync_request_completion(wip: WipBatch, verdict: str) -> None:
             sample.status = SampleStatus.COMPLETED
         sample.save(update_fields=["status", "current_wip", "updated_at"])
         request = item.request
-        if not request.samples.exclude(
-            status__in=[SampleStatus.COMPLETED, SampleStatus.FAILED]
-        ).exists():
-            request.status = RequestStatus.FINAL_CHECK
-            request.save(update_fields=["status", "updated_at"])
-        elif sample.status == SampleStatus.RECEIVED:
-            request.status = RequestStatus.RECEIVED
-            request.save(update_fields=["status", "updated_at"])
         updated_requests[request.id] = request
     if not wip.dispatches.exclude(status=DispatchStatus.COMPLETED).exists():
         wip.status = WipStatus.COMPLETED if verdict == "pass" else WipStatus.FAILED
         wip.completed_at = timezone.now()
         wip.save(update_fields=["status", "completed_at", "updated_at"])
     for request in updated_requests.values():
+        if not request.samples.exclude(
+            status__in=[SampleStatus.COMPLETED, SampleStatus.FAILED]
+        ).exists():
+            _set_request_status(request, RequestStatus.FINAL_CHECK, "awaiting final confirmation")
+        elif request.samples.filter(status=SampleStatus.RECEIVED).exists():
+            _set_request_status(request, RequestStatus.RECEIVED, "next experiment ready")
         notify(
             [request.requester],
             "request.experiment_updates",
@@ -315,7 +359,7 @@ def final_confirm_dispatch(actor, dispatch: DispatchJob, notes: str = "") -> Dis
         request = item.request
         _sync_request_after_final_check(request)
         request_ids.append(str(request.id))
-        if request.status == RequestStatus.COMPLETED:
+        if request.status == RequestStatus.CLOSED:
             notification_candidates.append(request)
     for request in notification_candidates:
         logical_key = (

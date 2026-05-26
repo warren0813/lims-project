@@ -337,6 +337,10 @@ const useLabWips = () => {
       .finally(() => setLoading(false));
   }, []);
   React.useEffect(() => { refresh(); }, [refresh]);
+  React.useEffect(() => {
+    const h = setInterval(refresh, 5000);
+    return () => clearInterval(h);
+  }, [refresh]);
   return { wips, loading, error, refresh };
 };
 
@@ -359,6 +363,10 @@ const useLabWipProposals = () => {
       .finally(() => setLoading(false));
   }, []);
   React.useEffect(() => { refresh(); }, [refresh]);
+  React.useEffect(() => {
+    const h = setInterval(refresh, 5000);
+    return () => clearInterval(h);
+  }, [refresh]);
   return { proposals, loading, error, refresh };
 };
 
@@ -440,7 +448,7 @@ const useLabDashboardData = () => {
   const [error, setError] = lS(null);
   const refresh = React.useCallback(() => {
     if (!window.api) { setLoading(false); return; }
-    setLoading(true);
+    if (samples.length === 0 && wips.length === 0 && dispatches.length === 0) setLoading(true);
     Promise.all([
       window.api.samples.list(),
       window.api.wips.list(),
@@ -467,8 +475,12 @@ const useLabDashboardData = () => {
       })
       .catch(err => setError(err.message || String(err)))
       .finally(() => setLoading(false));
-  }, []);
+  }, [samples.length, wips.length, dispatches.length]);
   React.useEffect(() => { refresh(); }, [refresh]);
+  React.useEffect(() => {
+    const h = setInterval(refresh, 3000);
+    return () => clearInterval(h);
+  }, [refresh]);
   return { samples, wips, dispatches, equipment, loading, error, refresh };
 };
 
@@ -505,6 +517,10 @@ const useLabSamples = () => {
       .finally(() => setLoading(false));
   }, []);
   React.useEffect(() => { refresh(); }, [refresh]);
+  React.useEffect(() => {
+    const h = setInterval(refresh, 5000);
+    return () => clearInterval(h);
+  }, [refresh]);
 
   // Join urgency from the parent request so the countdown widget works.
   // Default to '1w' if the request isn't visible to the current user.
@@ -1007,17 +1023,17 @@ const LabDashboard = ({ navigate }) => {
     return () => clearInterval(h);
   }, [hasRunning]);
   const incoming   = liveSamples.filter(s => s.status === 'incoming').length;
-  const activeWips = liveWips.filter(w => w.status === 'in_progress').length;
-  const runningDps = liveDispatches.filter(d => d.status === 'running').length;
-  const needsRecord= liveDispatches.filter(d => d.status === 'unloaded' || d.status === 'exception').length;
+  const activeWips = liveWips.filter(w => ['ready_for_dispatch', 'dispatching', 'running'].includes(w.status)).length;
+  const activeDispatches = liveDispatches.filter(d => ['pending', 'ready_for_dispatch', 'dispatched', 'running'].includes(d.status)).slice(0, 5);
+  const runningDps = activeDispatches.length;
+  const needsRecord= liveDispatches.filter(d => d.status === 'completed' && !d.finalConfirmedAt).length;
 
-  const activeDispatches = liveDispatches.filter(d => d.status === 'running' || d.status === 'pending' || d.status === 'dispatched').slice(0, 5);
-  const toRecord = liveDispatches.filter(d => d.status === 'unloaded' || d.status === 'exception');
+  const toRecord = liveDispatches.filter(d => d.status === 'completed' && !d.finalConfirmedAt);
   // "Live" equipment = anything currently hosting a non-terminal dispatch.
   // Backend doesn't ship a `running` status (gap §3.4) — compute client-side.
   const liveEquipmentIds = new Set(
     liveDispatches
-      .filter(d => d.status === 'running' || d.status === 'pending' || d.status === 'dispatched')
+      .filter(d => ['pending', 'ready_for_dispatch', 'dispatched', 'running'].includes(d.status))
       .map(d => d.equipmentId)
   );
 
@@ -1035,7 +1051,7 @@ const LabDashboard = ({ navigate }) => {
     { label: 'Incoming wafers', value: v(incoming),    onClick: () => navigate({ page: 'lab_samples', tab: 'incoming' }), icon: <LF.Inbox size={16} color="#a06618"/>, tint: '#fef4dd' },
     { label: 'Active WIPs',     value: v(activeWips),  onClick: () => navigate({ page: 'lab_wip' }),                       icon: <LF.WIP   size={16} color="#4f4a8f"/>, tint: '#ecebf3' },
     { label: 'Dispatches live', value: v(runningDps),  onClick: () => navigate({ page: 'lab_dispatches', tab: 'active' }), icon: <LF.Activity size={16} color="#a93445"/>, tint: '#fbe4e6' },
-    { label: 'To record',       value: v(needsRecord), onClick: () => navigate({ page: 'lab_dispatches', tab: 'record' }), icon: <LF.ClipboardList size={16} color="#2e6a47"/>, tint: '#e7f0e9' },
+    { label: 'To Record',       value: v(needsRecord), onClick: () => navigate({ page: 'lab_dispatches', tab: 'confirm' }), icon: <LF.ClipboardList size={16} color="#2e6a47"/>, tint: '#e7f0e9' },
   ];
 
   return (
@@ -1269,6 +1285,7 @@ const LabSamples = ({ navigate, defaultTab = 'all', showToast }) => {
   const [busyIds, setBusyIds] = lS(new Set());
   const [actionError, setActionError] = lS(null);
   const [expandedRequests, setExpandedRequests] = lS(new Set());
+  const [search, setSearch] = lS('');
   const didAutoExpandRequests = React.useRef(false);
 
   const runAction = async (id, op, label) => {
@@ -1292,10 +1309,28 @@ const LabSamples = ({ navigate, defaultTab = 'all', showToast }) => {
   // reason is optional on the backend; pass empty so the sample note isn't
   // littered with a placeholder string. A real reason prompt can come later.
   const handleReject = (w) => runAction(w.id, () => window.api.samples.rejectReceiving(w.id, ''), `${w.wafer} rejected`);
-  const handleBulkReceive = () => {
-    wafers
-      .filter(w => w.status === 'incoming' && !busyIds.has(w.id))
-      .forEach(handleReceive);
+  const handleBulkReceive = async () => {
+    const incoming = wafers.filter(w => w.status === 'incoming' && !busyIds.has(w.id));
+    if (incoming.length === 0) return;
+    setActionError(null);
+    setBusyIds(prev => {
+      const next = new Set(prev);
+      incoming.forEach(w => next.add(w.id));
+      return next;
+    });
+    try {
+      await Promise.all(incoming.map(w => window.api.samples.receive(w.id)));
+      showToast && showToast(`${incoming.length} wafer${incoming.length === 1 ? '' : 's'} received`);
+      await refresh();
+    } catch (e) {
+      setActionError(e.message || String(e));
+    } finally {
+      setBusyIds(prev => {
+        const next = new Set(prev);
+        incoming.forEach(w => next.delete(w.id));
+        return next;
+      });
+    }
   };
 
   const tabs = [
@@ -1306,7 +1341,14 @@ const LabSamples = ({ navigate, defaultTab = 'all', showToast }) => {
     { id: 'completed', label: 'Completed', count: wafers.filter(w => w.status === 'completed').length },
     { id: 'rejected',  label: 'Rejected',  count: wafers.filter(w => w.status === 'rejected').length },
   ];
-  const list = tab === 'all' ? wafers : wafers.filter(w => w.status === tab);
+  const searchTerm = search.trim().toLowerCase();
+  const filteredWafers = wafers.filter(w => !searchTerm
+    || String(w.requestNo || '').toLowerCase().includes(searchTerm)
+    || String(w.requestTitle || '').toLowerCase().includes(searchTerm)
+    || String(w.requester || '').toLowerCase().includes(searchTerm)
+    || String(w.wafer || '').toLowerCase().includes(searchTerm)
+  );
+  const list = tab === 'all' ? filteredWafers : filteredWafers.filter(w => w.status === tab);
   const requestGroups = React.useMemo(() => {
     const map = new Map();
     list.forEach(w => {
@@ -1367,9 +1409,9 @@ const LabSamples = ({ navigate, defaultTab = 'all', showToast }) => {
   return (
     <Page
       title="Samples"
-      subtitle="Wafers from fab — countdown starts when received. Red rows are past deadline."
+      subtitle="Wafers from fab — countdown starts when received. Red border = past deadline."
       right={
-        <SecondaryBtn icon={<LF.Inbox size={14}/>} onClick={handleBulkReceive}>Bulk receive incoming</SecondaryBtn>
+        <SecondaryBtn icon={<LF.Inbox size={14}/>} onClick={handleBulkReceive}>Bulk Receive Incoming</SecondaryBtn>
       }
     >
       {(error || actionError) && (
@@ -1381,6 +1423,32 @@ const LabSamples = ({ navigate, defaultTab = 'all', showToast }) => {
           {error || actionError}
         </div>
       )}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 1fr) auto auto', gap: 10, marginBottom: 14 }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px',
+          border: `1px solid ${line}`, borderRadius: 8, background: '#fff',
+        }}>
+          <LF.Search size={15} color={muted}/>
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search REQ ID, request name, fab user, or wafer"
+            style={{ border: 'none', outline: 'none', width: '100%', fontFamily: 'inherit', fontSize: 13.5, color: ink }}
+          />
+        </div>
+        <SecondaryBtn icon={<LF.Filter size={14}/>}>Filter</SecondaryBtn>
+        <SecondaryBtn icon={<LF.TrendUp size={14}/>}>Sort</SecondaryBtn>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+        <span style={{ padding: '6px 10px', borderRadius: 999, background: '#e7f6ec', color: '#157a4a', fontSize: 12, fontWeight: 800 }}>
+          {wafers.filter(w => w.status === 'completed').length} completed wafers
+        </span>
+        <span style={{ padding: '6px 10px', borderRadius: 999, background: '#fff7df', color: '#9a6500', fontSize: 12, fontWeight: 800 }}>
+          {requestGroups.filter(g => g.safeToClose && g.status !== 'closed').length} requests awaiting review
+        </span>
+      </div>
+
       <div style={{ display: 'flex', gap: 4, marginBottom: 14, borderBottom: `1px solid ${line}` }}>
         {tabs.map(t => (
           <button key={t.id} onClick={() => setTab(t.id)} style={{
@@ -1389,6 +1457,7 @@ const LabSamples = ({ navigate, defaultTab = 'all', showToast }) => {
             borderBottom: `2px solid ${tab === t.id ? ink : 'transparent'}`,
             color: tab === t.id ? ink : text2, fontWeight: 600, fontSize: 13,
             cursor: 'pointer', fontFamily: 'inherit', marginBottom: -1,
+            opacity: tab === t.id ? 1 : (t.count === 0 ? 0.45 : 0.75),
           }}>
             {t.label}
             <span style={{
@@ -1421,8 +1490,21 @@ const LabSamples = ({ navigate, defaultTab = 'all', showToast }) => {
           const expDone = group.progress?.completed ?? group.wafers.reduce((n, w) => n + (w.experimentProgress?.completed || 0), 0);
           const expPct = expTotal ? Math.round((expDone / expTotal) * 100) : 0;
           return (
-            <Card key={group.id} padding={0} style={{ overflow: 'hidden' }}>
-              <button onClick={() => toggleGroup(group.id)} style={{
+            <Card key={group.id} padding={0} style={{
+              overflow: 'hidden',
+              borderLeft: group.wafers.some(w => formatRemaining(computeRemaining(w)).level === 'overdue') ? '4px solid #c0394a' : `1px solid ${line}`,
+            }}>
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => toggleGroup(group.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    toggleGroup(group.id);
+                  }
+                }}
+                style={{
                 width: '100%', display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto auto 24px',
                 alignItems: 'center', gap: 16, padding: '16px 20px',
                 background: '#fff', border: 'none', cursor: 'pointer',
@@ -1432,7 +1514,9 @@ const LabSamples = ({ navigate, defaultTab = 'all', showToast }) => {
                   <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                     <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: muted, background: '#f1f1f5', padding: '3px 8px', borderRadius: 6 }}>{group.requestNo}</span>
                     <span style={{ fontSize: 15.5, fontWeight: 800, color: ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{group.title}</span>
-                    {group.safeToClose && <span style={{ fontSize: 11, fontWeight: 800, color: '#157a4a', background: '#e7f6ec', padding: '3px 8px', borderRadius: 999 }}>Ready for final review</span>}
+                    {group.status === 'closed'
+                      ? <span style={{ fontSize: 11, fontWeight: 800, color: '#475569', background: '#e5e7eb', padding: '3px 8px', borderRadius: 999 }}>Closed</span>
+                      : group.safeToClose && <span style={{ fontSize: 11, fontWeight: 800, color: '#9a6500', background: '#fff7df', padding: '3px 8px', borderRadius: 999 }}>Ready for final review</span>}
                   </div>
                   <div style={{ marginTop: 5, fontSize: 12, color: muted, display: 'inline-flex', gap: 8, flexWrap: 'wrap' }}>
                     <span>{group.wafers.length} wafer{group.wafers.length === 1 ? '' : 's'}</span>
@@ -1445,11 +1529,24 @@ const LabSamples = ({ navigate, defaultTab = 'all', showToast }) => {
                   </div>
                 </div>
                 {group.status && <Pill kind={group.status}/>}
+                {group.safeToClose && group.status !== 'closed' && (
+                  <SecondaryBtn
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const target = group.wafers.find(w => w.finalReviewDispatchId);
+                      if (target?.finalReviewDispatchId) navigate({ page: 'lab_dispatch_detail', id: target.finalReviewDispatchId });
+                    }}
+                    icon={<LF.CircleCheck size={14}/>}
+                    style={{ borderColor: '#f0d38a', color: '#8a5a00' }}
+                  >
+                    Final Confirm
+                  </SecondaryBtn>
+                )}
                 <span style={{ fontSize: 12, color: text2, fontWeight: 700 }}>
                   {open ? 'Hide wafers' : 'Show wafers'}
                 </span>
                 {open ? <LF.ChevronDown size={16} color={muted}/> : <LF.ChevronRight size={16} color={muted}/>}
-              </button>
+              </div>
               {open && (
                 <div style={{ borderTop: `1px solid ${lineSoft}`, display: 'flex', flexDirection: 'column' }}>
                   {group.wafers.map(w => {
@@ -1867,10 +1964,10 @@ const WipProposalBatchCard = ({ batch, planned = false }) => (
       </span>
       <span style={{ minWidth: 0 }}>
         <div style={{ fontSize: 12, color: text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {planned ? 'Waiting for idle equipment' : (batch.equipmentName || 'Auto-pick idle equipment')}
+          {planned ? (batch.readinessMessage || 'Waiting for idle equipment') : (batch.equipmentName || 'Auto-pick idle equipment')}
         </div>
         <div style={{ fontSize: 11.5, color: muted }}>
-          {batch.equipmentTypeName}{batch.equipmentQueueName ? ` · ${batch.equipmentQueueName}` : ''}
+          {batch.equipmentTypeName}
         </div>
       </span>
       <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: text2 }}>
@@ -1886,7 +1983,7 @@ const WipProposalBatchCard = ({ batch, planned = false }) => (
       <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: text2 }}>
         {window.UI.formatDuration(batch.estimatedRuntimeSec)}
         <span style={{ display: 'block', marginTop: 4, color: planned ? '#b8720e' : muted }}>
-          {planned ? 'planned' : (batch.equipmentStatus || 'ready')}
+          {planned ? 'planned' : (batch.readinessMessage || batch.equipmentStatus || 'ready')}
         </span>
       </span>
     </div>
@@ -1907,7 +2004,11 @@ const WipProposalQueue = ({ proposals, loading, confirmingId, cancelingId, onCon
       <CardHeader>
         <span>Auto WIP Queue</span>
         <span style={{ marginLeft: 'auto', fontSize: 11, color: muted, fontWeight: 600 }}>
-          {proposals.reduce((n, p) => n + p.batches.length, 0)} proposed batch{proposals.reduce((n, p) => n + p.batches.length, 0) === 1 ? '' : 'es'}
+          {(() => {
+            const batches = proposals.flatMap(p => p.batches);
+            const ready = batches.filter(b => b.readyToDispatch || b.equipmentId).length;
+            return `${batches.length} proposed batch${batches.length === 1 ? '' : 'es'} · ${ready} ready now · ${Math.max(batches.length - ready, 0)} waiting`;
+          })()}
         </span>
       </CardHeader>
       <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -1947,8 +2048,11 @@ const WipProposalQueue = ({ proposals, loading, confirmingId, cancelingId, onCon
               </div>
             </div>
             {(() => {
-              const current = proposal.batches.filter(batch => batch.equipmentId);
-              const planned = proposal.batches.filter(batch => !batch.equipmentId);
+              const current = proposal.batches.filter(batch => batch.readyToDispatch || batch.equipmentId);
+              const planned = proposal.batches.filter(batch => !(batch.readyToDispatch || batch.equipmentId));
+              const waferTotal = proposal.batches.reduce((n, batch) => n + batch.items.length, 0);
+              const readyWafers = current.reduce((n, batch) => n + batch.items.length, 0);
+              const equipmentTypes = [...new Set(proposal.batches.map(batch => batch.equipmentTypeName).filter(Boolean))].join(', ');
               return (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
                   {proposal.batches.length === 0 ? (
@@ -1960,9 +2064,25 @@ const WipProposalQueue = ({ proposals, loading, confirmingId, cancelingId, onCon
                 </div>
                   ) : (
                     <>
+                      <div style={{
+                        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8,
+                        padding: 12, borderRadius: 8, background: '#fbfbfd', border: `1px solid ${lineSoft}`,
+                      }}>
+                        {[
+                          ['Total wafers', waferTotal],
+                          ['Ready now', readyWafers],
+                          ['Waiting', Math.max(waferTotal - readyWafers, 0)],
+                          ['Equipment type', equipmentTypes || '—'],
+                        ].map(([label, value]) => (
+                          <div key={label}>
+                            <div style={{ fontSize: 10.5, fontWeight: 800, color: muted, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</div>
+                            <div style={{ marginTop: 4, fontSize: 14, fontWeight: 800, color: ink }}>{value}</div>
+                          </div>
+                        ))}
+                      </div>
                       <div>
                         <div style={{ fontSize: 11, fontWeight: 800, color: text2, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
-                          Current Dispatch Plan · {current.length} batch{current.length === 1 ? '' : 'es'}
+                          Current Dispatch Plan · {current.length} batch{current.length === 1 ? '' : 'es'} ready now
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                           {current.length
@@ -1975,12 +2095,25 @@ const WipProposalQueue = ({ proposals, loading, confirmingId, cancelingId, onCon
                           <div style={{ fontSize: 11, fontWeight: 800, color: '#9a5a12', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
                             Planned Dispatch Queue · {planned.length} batch{planned.length === 1 ? '' : 'es'}
                           </div>
+                          <div style={{
+                            display: 'flex', alignItems: 'center', gap: 8,
+                            padding: '9px 12px', borderRadius: 8, background: '#fff8ec',
+                            color: '#9a5a12', border: '1px solid #f0d7a8', fontSize: 12.5, marginBottom: 8,
+                          }}>
+                            <LF.Alert size={14}/>
+                            <span>Planned batches stay queued until compatible equipment becomes idle.</span>
+                          </div>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                             {planned.map(batch => <WipProposalBatchCard key={batch.id} batch={batch} planned/>)}
                           </div>
                         </div>
                       )}
                     </>
+                  )}
+                  {proposal.batches.length > 0 && (
+                    <div style={{ fontSize: 12.5, color: muted, textAlign: 'right' }}>
+                      Confirm & Dispatch will send {current.length} ready batch{current.length === 1 ? '' : 'es'} now. {planned.length} planned batch{planned.length === 1 ? '' : 'es'} remain queued.
+                    </div>
                   )}
                 </div>
               );
@@ -1997,7 +2130,7 @@ const LabWipList = ({ navigate, showToast }) => {
   const { wips, loading, error, refresh } = useLabWips();
   const { proposals, loading: proposalsLoading, error: proposalsError, refresh: refreshProposals } = useLabWipProposals();
   const { wafers: autoWipWafers, refresh: refreshAutoWipWafers } = useLabSamples();
-  const [tab, setTab] = lS('active');
+  const [tab, setTab] = lS('running');
   const [modalOpen, setModalOpen] = lS(false);
   const [autoBusy, setAutoBusy] = lS(false);
   const [confirmingId, setConfirmingId] = lS(null);
@@ -2008,10 +2141,14 @@ const LabWipList = ({ navigate, showToast }) => {
   // Completed = terminal states (completed + aborted).
   const terminalWip = new Set(['completed', 'aborted', 'cancelled', 'failed']);
   const isWipActive = (w) => !terminalWip.has(w.status);
-  const filtered = tab === 'active'
-    ? wips.filter(isWipActive)
+  const filtered = tab === 'drafts'
+    ? wips.filter(w => w.status === 'draft' || w.status === 'ready_for_dispatch')
+    : tab === 'running'
+      ? wips.filter(w => w.status === 'dispatching' || w.status === 'running')
     : tab === 'completed'
-      ? wips.filter(w => !isWipActive(w))
+      ? wips.filter(w => w.status === 'completed')
+      : tab === 'cancelled'
+        ? wips.filter(w => w.status === 'cancelled' || w.status === 'aborted' || w.status === 'failed')
       : wips;
   const hasAutoWipCandidates = autoWipWafers.some(w => w.raw_status === 'received' && !w.hasWip);
 
@@ -2131,8 +2268,10 @@ const LabWipList = ({ navigate, showToast }) => {
       />
       <div style={{ display: 'flex', gap: 4, marginBottom: 14, borderBottom: `1px solid ${line}` }}>
         {[
-          { id: 'active',    label: 'Active',    n: wips.filter(isWipActive).length },
-          { id: 'completed', label: 'Completed', n: wips.filter(w => !isWipActive(w)).length },
+          { id: 'drafts',    label: 'Drafts',    n: wips.filter(w => w.status === 'draft' || w.status === 'ready_for_dispatch').length },
+          { id: 'running',   label: 'Running / Active WIP', n: wips.filter(w => w.status === 'dispatching' || w.status === 'running').length },
+          { id: 'completed', label: 'Completed WIP', n: wips.filter(w => w.status === 'completed').length },
+          { id: 'cancelled', label: 'Cancelled', n: wips.filter(w => w.status === 'cancelled' || w.status === 'aborted' || w.status === 'failed').length },
           { id: 'all',       label: 'All',       n: wips.length },
         ].map(t => (
           <button key={t.id} onClick={() => setTab(t.id)} style={{
@@ -2160,8 +2299,14 @@ const LabWipList = ({ navigate, showToast }) => {
         {filtered.length === 0 ? (
           <Card padding={48} style={{ textAlign: 'center', color: muted }}>
             <LF.WIP size={32} color="#cbcbd6" style={{ marginBottom: 10 }}/>
-            <div style={{ fontSize: 15, fontWeight: 800, color: ink }}>No WIPs in this view</div>
-            <div style={{ fontSize: 13, color: muted, marginTop: 6 }}>Auto arrange received wafers or create a draft WIP to begin dispatch planning.</div>
+            <div style={{ fontSize: 15, fontWeight: 800, color: ink }}>{tab === 'running' ? 'No active WIPs' : 'No WIPs in this view'}</div>
+            <div style={{ fontSize: 13, color: muted, marginTop: 6 }}>
+              {tab === 'running'
+                ? hasAutoWipCandidates
+                  ? `${autoWipWafers.filter(w => w.raw_status === 'received' && !w.hasWip).length} received wafer${autoWipWafers.filter(w => w.raw_status === 'received' && !w.hasWip).length === 1 ? '' : 's'} ready for WIP planning.`
+                  : 'No received wafers are ready for WIP.'
+                : 'Auto arrange received wafers or create a draft WIP to begin dispatch planning.'}
+            </div>
             <div style={{ display: 'inline-flex', gap: 8, marginTop: 14 }}>
               <SecondaryBtn icon={<LF.Activity size={14}/>} onClick={onAutoArrange} disabled={autoBusy || !hasAutoWipCandidates}>Auto Arrange</SecondaryBtn>
               <PrimaryBtn icon={<LF.Plus size={14}/>} onClick={openModal}>New WIP</PrimaryBtn>
@@ -2846,6 +2991,7 @@ const AddDispatchModalInner = ({ onClose, wip, onCreated }) => {
 const LabDispatchList = ({ navigate, defaultTab = 'active' }) => {
   const { dispatches, loading, error } = useLabDispatches();
   const [tab, setTab] = lS(defaultTab === 'record' ? 'confirm' : defaultTab);
+  const [collapsedEquipment, setCollapsedEquipment] = lS(new Set());
   const isWaitingConfirmation = (d) => d.status === 'completed' && !d.finalConfirmedAt;
   const isClosed = (d) => (d.status === 'completed' && !!d.finalConfirmedAt) || d.status === 'aborted';
   const isActiveDispatch = (d) => !isWaitingConfirmation(d) && !isClosed(d);
@@ -2892,6 +3038,14 @@ const LabDispatchList = ({ navigate, defaultTab = 'active' }) => {
     { id: 'done',   label: 'Closed' },
     { id: 'all',    label: 'All' },
   ];
+  const toggleEquipmentGroup = (id) => {
+    setCollapsedEquipment(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   if (loading && dispatches.length === 0) {
     return (
@@ -2954,14 +3108,20 @@ const LabDispatchList = ({ navigate, defaultTab = 'active' }) => {
         ) : equipmentGroups.map(group => {
           const running = group.dispatches.find(d => d.status === 'running') || group.dispatches[0];
           const groupPct = Math.max(...group.dispatches.map(d => clampPct(d.progress || 0)), 0);
+          const collapsed = collapsedEquipment.has(group.id);
+          const closedOnly = group.dispatches.every(isClosed);
           return (
-            <Card key={group.id} padding={0} style={{ overflow: 'hidden' }}>
-              <div style={{
+            <Card key={group.id} padding={0} style={{ overflow: 'hidden', borderLeft: group.status === 'running' ? '4px solid #6c67b8' : `1px solid ${line}` }}>
+              <button onClick={() => toggleEquipmentGroup(group.id)} style={{
+                width: '100%',
                 display: 'grid',
-                gridTemplateColumns: 'minmax(0,1fr) 140px 140px 160px',
+                gridTemplateColumns: '24px minmax(0,1fr) 140px 140px 160px',
                 gap: 16, alignItems: 'center',
                 padding: '16px 20px', background: '#fbfbfd', borderBottom: `1px solid ${lineSoft}`,
+                borderTop: 'none', borderLeft: 'none', borderRight: 'none',
+                cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit',
               }}>
+                {collapsed ? <LF.ChevronRight size={16} color={muted}/> : <LF.ChevronDown size={16} color={muted}/>}
                 <div style={{ minWidth: 0 }}>
                   <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
                     <LF.Activity size={15} color={group.status === 'running' ? '#4f4a8f' : muted}/>
@@ -2974,26 +3134,32 @@ const LabDispatchList = ({ navigate, defaultTab = 'active' }) => {
                 </div>
                 <span style={{ fontSize: 12.5, color: text2, fontWeight: 700 }}>{running?.experimentName || '—'}</span>
                 <span style={{ fontSize: 12.5, color: text2 }}>{running?.waferCount || 0} wafer{(running?.waferCount || 0) === 1 ? '' : 's'} assigned</span>
-                <span>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, color: muted, marginBottom: 5 }}>
-                    <span>{running?.currentStep || 'Progress'}</span>
-                    <span style={{ fontFamily: 'var(--font-mono)', color: accent }}>{Math.round(groupPct)}%</span>
-                  </div>
-                  <ProgressBar value={groupPct} height={7} color="linear-gradient(90deg, #f4a8bf, #6c67b8)" track="#f1eef9"/>
-                </span>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                {closedOnly ? (
+                  <span style={{ fontSize: 12.5, color: muted, fontWeight: 700 }}>Closed</span>
+                ) : (
+                  <span>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, color: muted, marginBottom: 5 }}>
+                      <span>{running?.currentStep || 'Progress'}</span>
+                      <span style={{ fontFamily: 'var(--font-mono)', color: accent }}>{Math.round(groupPct)}%</span>
+                    </div>
+                    <ProgressBar value={groupPct} height={7} color="linear-gradient(90deg, #f4a8bf, #6c67b8)" track="#f1eef9"/>
+                  </span>
+                )}
+              </button>
+              {!collapsed && <div style={{ display: 'flex', flexDirection: 'column' }}>
                 {group.dispatches.map(d => {
                   const pct = clampPct(d.progress);
                   const expCode = (findExp(d.experimentId)?.code) || (d.experimentName ? d.experimentName.split(/\s+/).map(t => t[0]).join('').slice(0, 4).toUpperCase() : '—');
+                  const closed = isClosed(d);
                   return (
                     <button key={d.id} onClick={() => navigate({ page: 'lab_dispatch_detail', id: d.id })} style={{
                       display: 'grid',
                       gridTemplateColumns: '110px minmax(0,1fr) 130px 90px 95px 140px 24px',
                       alignItems: 'center', gap: 14,
                       padding: '13px 20px',
-                      background: '#fff', border: 'none', borderTop: `1px solid ${lineSoft}`,
+                      background: closed ? '#fbfbfd' : '#fff', border: 'none', borderTop: `1px solid ${lineSoft}`,
                       textAlign: 'left', cursor: 'pointer', fontFamily: 'inherit',
+                      opacity: closed ? 0.82 : 1,
                     }}>
                       <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 800, color: ink }}>{d.code}</span>
                       <span style={{ minWidth: 0, display: 'inline-flex', alignItems: 'center', gap: 9 }}>
@@ -3001,16 +3167,16 @@ const LabDispatchList = ({ navigate, defaultTab = 'active' }) => {
                         <span style={{ fontSize: 13.5, fontWeight: 700, color: ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.experimentName || '—'}</span>
                       </span>
                       <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: text2 }}>{d.wipNo || `WIP-${String(d.wipId).padStart(4,'0')}`}</span>
-                      <span style={{ fontSize: 12.5, color: text2 }}>{d.waferCount || 0} wafers</span>
+                      <span style={{ fontSize: 12.5, color: text2 }}>{d.waferCount || 0} wafer{(d.waferCount || 0) === 1 ? '' : 's'}</span>
                       <span><Pill kind={d.status}/></span>
-                      <span>
-                        <ProgressBar value={pct} height={6} color="linear-gradient(90deg, #f4a8bf, #6c67b8)" track="#f1eef9"/>
-                      </span>
+                      {closed
+                        ? <span style={{ fontSize: 12.5, color: muted, fontWeight: 700 }}>Confirmed</span>
+                        : <span><ProgressBar value={pct} height={6} color="linear-gradient(90deg, #f4a8bf, #6c67b8)" track="#f1eef9"/></span>}
                       <LF.ChevronRight size={15} color="#cbcbd6"/>
                     </button>
                   );
                 })}
-              </div>
+              </div>}
             </Card>
           );
         })}
