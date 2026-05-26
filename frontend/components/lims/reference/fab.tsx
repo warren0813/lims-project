@@ -1259,7 +1259,6 @@ const FabRequestList = ({ navigate, initialTab = 'all', titleOverride, drafts = 
   const [search, setSearch] = uS('');
   const [urgency, setUrgency] = uS('all');
   const [sort, setSort] = uS('newest');
-  const [expanded, setExpanded] = uS(new Set());
 
   const counts = uM(() => Object.fromEntries(TABS.map(t => [t.id, groupedRequests.filter(t.filter).length])), [groupedRequests]);
   const baseList = drafts ? groupedRequests.filter(r => r.status === 'draft') : groupedRequests;
@@ -1281,13 +1280,6 @@ const FabRequestList = ({ navigate, initialTab = 'all', titleOverride, drafts = 
   const onOpenRequest = (r) => navigate(
     drafts ? { page: 'fab_draft_edit', id: r.id } : { page: 'fab_request', id: r.id }
   );
-  const toggleRequest = (id) => setExpanded(prev => {
-    const next = new Set(prev);
-    const key = String(id);
-    if (next.has(key)) next.delete(key);
-    else next.add(key);
-    return next;
-  });
 
   if (loading && requests.length === 0) {
     return (
@@ -1413,19 +1405,17 @@ const FabRequestList = ({ navigate, initialTab = 'all', titleOverride, drafts = 
             <F.ClipboardList size={32} color="#cbcbd6" style={{ marginBottom: 10 }}/>
             <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-secondary)' }}>No requests match these filters</div>
           </FabCard>
-        ) : list.map(r => {
-          const open = expanded.has(String(r.id));
-          return (
-          <FabCard key={r.id} padding={0} style={{ overflow: 'hidden' }}>
-            <button onClick={() => toggleRequest(r.id)} style={{
+        ) : list.map(r => (
+          <FabCard key={r.id} padding={0}>
+            <div style={{
               display: 'grid', width: '100%',
               gridTemplateColumns: drafts
-                ? '72px minmax(0,1fr) 180px 80px 24px'
-                : '72px minmax(0,1fr) 140px 110px 130px 80px 24px',
+                ? '72px minmax(0,1fr) 180px 80px auto'
+                : '72px minmax(0,1fr) 140px 110px 130px 140px',
               alignItems: 'center', gap: 18,
               padding: '18px 22px',
-              background: '#fff', border: 'none',
-              textAlign: 'left', cursor: 'pointer',
+              background: '#fff',
+              textAlign: 'left',
               fontFamily: 'inherit',
             }}>
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: '#a8a8b8', letterSpacing: '0.02em' }}>
@@ -1461,31 +1451,14 @@ const FabRequestList = ({ navigate, initialTab = 'all', titleOverride, drafts = 
               </div>
               {!drafts && <div style={{ display: 'flex', justifyContent: 'flex-start' }}><UrgencyPill urgency={r.urgency} size="md"/></div>}
               {!drafts && <div style={{ display: 'flex', justifyContent: 'flex-start' }}><StatusPill status={r.status} size="md"/></div>}
-              <span style={{ fontSize: 12, fontWeight: 700, color: '#6c67b8' }}>{open ? 'Hide' : 'Show'}</span>
-              {open ? <F.ChevronDown size={15} color="#cbcbd6"/> : <F.ChevronRight size={15} color="#cbcbd6"/>}
-            </button>
-            {open && (
-              <div style={{ borderTop: '1px solid rgba(0,0,0,0.06)', padding: '14px 20px', background: '#fafafd' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: 10, marginBottom: 12 }}>
-                  {(r.samples || []).map((s, i) => (
-                    <div key={`${s.id || s.wafer}-${i}`} style={{ padding: '10px 12px', borderRadius: 8, background: '#fff', border: '1px solid rgba(0,0,0,0.07)' }}>
-                      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, fontWeight: 800, color: 'var(--text-primary)' }}>{s.wafer || s.sampleNo}</div>
-                      <div style={{ marginTop: 4, display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                        <SamplePill status={s.status}/>
-                        <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{s.experimentProgress?.completed || 0}/{s.experimentProgress?.total || (s.expIds || []).length} experiments done</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                  <PrimaryBtn icon={<F.ArrowRight size={14}/>} onClick={() => onOpenRequest(r)}>
-                    {drafts ? 'Continue' : 'Open details'}
-                  </PrimaryBtn>
-                </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <PrimaryBtn icon={<F.ArrowRight size={14}/>} onClick={() => onOpenRequest(r)}>
+                  {drafts ? 'Continue' : 'Open details'}
+                </PrimaryBtn>
               </div>
-            )}
+            </div>
           </FabCard>
-        )})}
+        ))}
       </div>
     </FabPage>
   );
@@ -2371,7 +2344,9 @@ const FabApp = ({ route, navigate }) => {
 
   return (
     <>
-      {page}
+      <div key={`page-${route.page}-${route.id || ''}-${route.tab || ''}`}>
+        {page}
+      </div>
       {toast && (
         <div style={{
           position: 'fixed', bottom: 28, left: '50%', transform: 'translateX(-50%)',

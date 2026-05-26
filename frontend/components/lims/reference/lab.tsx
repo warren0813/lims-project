@@ -498,10 +498,10 @@ const useLabSamples = () => {
   const refresh = React.useCallback(() => {
     if (!window.api || !window.api.samples) {
       setLoading(false);
-      return;
+      return Promise.resolve();
     }
     setLoading(true);
-    Promise.all([
+    return Promise.all([
       window.api.samples.list(),
       window.api.requests.list().catch(() => []),
     ])
@@ -1513,18 +1513,22 @@ const LabSamples = ({ navigate, defaultTab = 'all', showToast }) => {
                 textAlign: 'left', fontFamily: 'inherit',
               }}>
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                     <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: muted, background: '#f1f1f5', padding: '3px 8px', borderRadius: 6 }}>{group.requestNo}</span>
                     <span style={{ fontSize: 15.5, fontWeight: 800, color: ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{group.title}</span>
                     {group.status === 'closed'
                       ? <span style={{ fontSize: 11, fontWeight: 800, color: '#475569', background: '#e5e7eb', padding: '3px 8px', borderRadius: 999 }}>Closed</span>
                       : group.safeToClose && <span style={{ fontSize: 11, fontWeight: 800, color: '#9a6500', background: '#fff7df', padding: '3px 8px', borderRadius: 999 }}>Ready for final review</span>}
                   </div>
-                  <div style={{ marginTop: 5, fontSize: 12, color: muted, display: 'inline-flex', gap: 8, flexWrap: 'wrap' }}>
-                    <span>{group.wafers.length} wafer{group.wafers.length === 1 ? '' : 's'}</span>
-                    <span>{expDone}/{expTotal} experiments completed</span>
-                    {Object.entries(counts).map(([status, count]) => <span key={status}>{count} {status.replace('_', ' ')}</span>)}
-                    {group.requester && <span>by {group.requester}</span>}
+                  <div style={{ marginTop: 6, fontSize: 12, color: muted, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                      <span>{group.wafers.length} wafer{group.wafers.length === 1 ? '' : 's'}</span>
+                      <span>{expDone}/{expTotal} experiments completed</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                      {Object.entries(counts).map(([status, count]) => <span key={status}>{count} {status.replace('_', ' ')}</span>)}
+                      {group.requester && <span>by {group.requester}</span>}
+                    </div>
                   </div>
                   <div style={{ marginTop: 8, height: 6, borderRadius: 999, background: '#ededf3', overflow: 'hidden', maxWidth: 380 }}>
                     <div style={{ width: `${expPct}%`, height: '100%', background: group.safeToClose ? '#157a4a' : '#6c67b8', transition: 'width 240ms ease' }}/>
@@ -4369,7 +4373,9 @@ const LabApp = ({ route, navigate, canManage = false }) => {
 
   return (
     <>
-      {page}
+      <div key={`page-${p}-${route.id || ''}-${route.tab || ''}`}>
+        {page}
+      </div>
       {/* WipCreationModal lives inside LabWipList; EquipmentModal lives
           inside LabEquipment. Both POST to the live API directly. */}
       {toast && (

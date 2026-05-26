@@ -108,7 +108,7 @@ export function FabRequests({ navigate, initialTab = 'all' }: FabRequestsProps) 
     return requests.filter((r: any) => r.status === filter);
   }, [requests, filter]);
 
-  const statuses = ['all', 'submitted', 'in_progress', 'completed', 'cancelled'];
+  const statuses = ['pending', 'submitted', 'in_progress', 'completed', 'cancelled'];
 
   return (
     <div style={{ padding: '32px 44px 80px', maxWidth: 1280, margin: '0 auto' }}>

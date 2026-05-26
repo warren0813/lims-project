@@ -2117,7 +2117,7 @@ const MgrDashboard = ({ navigate }) => {
           label="Pending approvals"
           subtitle="Review and approve"
           badge={pending.length}
-          onClick={() => navigate({ page: 'mgr_all_requests', tab: 'submitted' })}
+          onClick={() => navigate({ page: 'mgr_all_requests', tab: 'pending' })}
         />
         <ShortcutCard
           icon={<MI.Alert size={17}/>}
@@ -2145,7 +2145,7 @@ const MgrDashboard = ({ navigate }) => {
         </CardHeader>
         {pending.length === 0 ? (
           <div style={{ padding: '28px 22px', textAlign: 'center', color: mMuted, fontSize: 13 }}>
-            All clear \u2014 nothing waiting on you.
+            All clear - nothing waiting on you.
           </div>
         ) : pending.map(r => (
           <button key={r.id} onClick={() => navigate({ page: 'mgr_request', id: r.id })} style={{
@@ -2233,7 +2233,9 @@ const MgrApp = ({ route, navigate }) => {
 
   return (
     <>
-      {page}
+      <div key={`page-${route.page}-${route.id || ''}-${route.tab || ''}`}>
+        {page}
+      </div>
       {toast && (
         <div style={{
           position: 'fixed', bottom: 28, left: '50%', transform: 'translateX(-50%)',
